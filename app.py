@@ -200,10 +200,11 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
 
     with tabs[2]:
         st.caption(
-            "Startet bei der Hafen-bewusst gruppierten Lösung (garantiert nie schlechter) und sucht "
-            "gezielt nach Packstücken, die für eine kleine Straßenkosten-Erhöhung den Hafen wechseln "
-            "könnten, um mit anderen Packstücken zusammen Container einzusparen - die starre Gruppierung "
-            "links ist nicht immer optimal (siehe README für ein konkretes Beispiel)."
+            "Startet bei DREI Ausgangslösungen (Hafen-bewusst gruppiert, Blind gepackt UND der "
+            "eigenständigen monobeam-Konstruktion) und sucht "
+            "von allen dreien aus gezielt nach Packstücken, die für eine kleine Straßenkosten-Erhöhung "
+            "den Hafen wechseln könnten - das günstigere Endergebnis gewinnt, garantiert nie schlechter "
+            "als eine der drei Alternativen (siehe README für ein konkretes Beispiel)."
         )
         summary_beam = render_freight_panel("beam", "Beam Search", beam_assignments, port_coords, region_coords, item_sizes, item_regions, road_cost, sea_freight_arr)
 
@@ -222,9 +223,10 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
         st.caption(
             "Blind und Hafen-bewusst nutzen denselben Packmechanismus (First-Fit-Decreasing) und "
             "dieselbe Hafenwahl-Logik je Container - der Unterschied liegt allein in der Gruppierung "
-            "vor dem Packen. Beam Search startet bei der Hafen-bewusst gruppierten Lösung und sucht "
-            "zusätzlich gezielt nach lohnenden Hafen-Wechseln einzelner Packstücke (siehe README für "
-            "ein konkretes Beispiel, wann sich das lohnt)."
+            "vor dem Packen. Beam Search startet bei DREI Lösungen (Blind, Hafen-bewusst und der "
+            "eigenständigen monobeam-Konstruktion) und sucht von allen drei aus zusätzlich gezielt nach "
+            "lohnenden Hafen-Wechseln - das beste Ergebnis gewinnt, garantiert nie schlechter als eine "
+            "der drei Alternativen (siehe README)."
         )
 
 with st.expander("Wie funktioniert diese Demo?"):
@@ -252,10 +254,16 @@ Hafenwahl weniger kompromissbehaftet macht.
 starr anhand des individuell günstigsten Hafens - das ist nicht immer optimal. Ein
 Packstück, das für eine kleine Straßenkosten-Erhöhung den Hafen wechselt, kann manchmal
 mit einem andersartig bevorzugten Packstück zusammen einen ganzen Container einsparen.
-Beam Search startet deshalb bei der Hafen-bewusst gruppierten Lösung (garantiert nie
-schlechter) und sucht über mehrere Runden gezielt nach genau solchen lohnenden
-Verschiebungen - direkte Bewertung des tatsächlichen Kosteneffekts statt blinder
-Neukonstruktion. Bewusst so aufgebaut, dass eine höhere Beam-Breite das Ergebnis
+Beam Search sucht deshalb von DREI Ausgangslösungen aus (Hafen-bewusst gruppiert, Blind
+gepackt UND der eigenständigen monobeam-Konstruktion, die Packstücke oft anders auf
+Container verteilt als die beiden anderen) über mehrere Runden gezielt nach genau
+solchen lohnenden Verschiebungen - direkte Bewertung des tatsächlichen Kosteneffekts
+statt blinder Neukonstruktion - und übernimmt das günstigste Endergebnis. Dadurch
+garantiert **nie schlechter als eine der drei anderen Ausgangslösungen** (eine frühere
+Fassung startete nur bei Hafen-bewusst und verlor dadurch bei hoher Seefracht spürbar
+gegen Blind, siehe README - der dritte Startpunkt kam auf Nachfrage dazu, ob eine von
+den anderen Heuristiken unabhängige Beam-Search-Konstruktion zusätzlich hilft: ja, in
+etwa 12 % der Fälle). Bewusst so aufgebaut, dass eine höhere Beam-Breite das Ergebnis
 **nachweislich nie verschlechtern** kann.
 
 **Der Kipppunkt:** Hafen-bewusste Gruppierung (und Beam Search, das darauf aufbaut) führt

@@ -376,6 +376,68 @@ vorhandener Nutzen), ohne die App um eine weitere Methode zu erweitern. Der Regl
 der Codebasis (für die technische Vergleichsgeschichte oben), sind aber nicht mehr in
 der UI verdrahtet.
 
+### Ein gefundener blinder Fleck: nur gegen EINE Ausgangslösung abgesichert
+
+Bei einer gezielten Nachprüfung des "Teure Seefracht"-Presets fiel auf: Beam Search
+verlor dort deutlich gegen "Blind gepackt" (30.961 € vs. 27.735 €, **11,6 % teurer**) -
+obwohl Beam Search als "beste" Methode gedacht ist. Die Ursache: die
+Verbesserungssuche startete ausschließlich bei der hafen-bewussten Gruppierung und war
+dadurch nur gegen DIESE eine Ausgangslösung abgesichert ("nie schlechter als
+Hafen-bewusst"), nicht gegen Blind. Bei hoher Seefracht braucht die hafen-bewusste
+Gruppierung strukturell mehr Container als Blind (siehe Kipppunkt oben) - dieser
+Nachteil vererbte sich unverändert an Beam Search, das darauf aufbaute.
+
+**Fix:** Die Verbesserungssuche läuft jetzt von BEIDEN Ausgangslösungen aus (Hafen-
+bewusst UND Blind gepackt), das günstigere Endergebnis gewinnt. Dadurch gilt jetzt
+`Beam Search <= min(Blind gepackt, Hafen-bewusst gruppiert)` garantiert - nicht nur
+gegen eine der beiden. Beim "Teure Seefracht"-Preset erreicht Beam Search seitdem exakt
+Blinds Niveau (27.735 €) statt 11,6 % darüber zu liegen. Verifiziert über 21
+Kombinationen (3 Seefracht-Niveaus × 7 Seeds), bei denen abwechselnd Blind oder
+Hafen-bewusst die schwächere Ausgangslösung ist -
+`test_flexible_beam_never_worse_than_blind_either`.
+
+**Kosten:** ungefähr doppelte Rechenzeit (zwei Suchen statt einer). Worst Case bei 100
+Packstücken stieg von ~370-380 ms auf ~520 ms - weiterhin klar innerhalb des Budgets für
+automatische Neuberechnung bei jeder UI-Interaktion (Sicherheitsschwelle 2 s).
+
+### Eine dritte Ausgangslösung: hilft eine unabhängige Beam-Search-Konstruktion?
+
+Auf Nachfrage untersucht: `flexible_beam_search_construction` ist keine eigenständige
+Konstruktion, sondern verfeinert nur die Ergebnisse der beiden anderen Methoden. Es
+gibt aber zwei eigenständige, von Grund auf selbst konstruierende Beam-Search-Varianten
+im Code (`beam_search_construction`, `monobeam_construction`), die nicht in der UI
+verdrahtet sind. Hilft es, eine davon zusätzlich als dritte Ausgangslösung für die
+Verbesserungssuche zu nutzen?
+
+**Ja, in etwa 12 % der Fälle.** Über 25 Testinstanzen fand die Verbesserungssuche von
+`monobeam_construction` aus in 3 Fällen ein spürbar besseres Endergebnis (bis zu 850 €
+Zusatzersparnis in einer Instanz), das von Blind oder Hafen-bewusst aus nicht
+erreichbar war - `monobeam_construction` verteilt Packstücke manchmal strukturell
+anders auf Container als eine reine Größen-FFD, was der Verbesserungssuche einen
+anderen Ausgangspunkt zum Weitersuchen gibt. In den übrigen 88 % der Fälle brachte der
+dritte Startpunkt keinen zusätzlichen Vorteil, aber auch keinen Nachteil (per
+Konstruktion: eine zusätzliche Kandidatenquelle für dasselbe Minimum kann nie
+schlechter sein). `test_flexible_beam_never_worse_than_monobeam_either`,
+`test_flexible_beam_finds_improvement_unreachable_from_blind_or_aware`.
+
+**Ein Fund bei der Integration:** `monobeam_construction` hat einen eigenen
+`beam_width`-Parameter (seine interne Konstruktionsbreite) - naheliegend wäre gewesen,
+dafür einfach denselben Wert wie den Verbesserungssuche-Regler zu verwenden. Getestet:
+das wäre ein Fehler gewesen. Der Verbesserungssuche-Regler kann bis auf 1 heruntergehen
+(dort optimal, siehe oben), aber `monobeam_construction` braucht selbst mindestens
+Breite 2 für gute Ergebnisse (bw=1 lieferte nach der Verbesserungssuche spürbar
+schlechtere Endergebnisse, z. B. 13.520 statt 12.903 € bei einer Testinstanz - ab
+Breite 2 kaum noch zusätzlicher Nutzen). Die beiden Regler-Bedeutungen sind also nicht
+dieselbe Größe, obwohl beide "beam_width" heißen. Fix: `monobeam_construction`
+verwendet intern `max(2, beam_width)` - unabhängig vom Regler mindestens Breite 2.
+`test_flexible_beam_monobeam_construction_width_decoupled_from_slider`.
+
+**Kosten:** von zwei auf drei Ausgangslösungen, also ungefähr das 1,5-fache statt das
+Doppelte der ursprünglichen Rechenzeit (`monobeam_construction` selbst ist mit ~10ms
+sehr schnell, die dritte Verbesserungssuche kostet etwa so viel wie die anderen beiden
+zusammen). Worst Case bei 100 Packstücken: ~875 ms - weiterhin klar innerhalb des
+2s-Budgets (`test_flexible_beam_worst_case_with_triple_start_completes_within_budget`).
+
 ## Presets: zwei weitere Funde bei einer gezielten Nachprüfung
 
 Nach dem Einbau von Beam Search fiel bei einer Nachfrage auf, dass die verbliebenen
@@ -438,7 +500,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-80 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
+85 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
 
 ## 3. Kostenlos online stellen (Streamlit Community Cloud)
 

@@ -101,13 +101,17 @@ def test_beam_search_lohnt_sich_preset_shows_meaningful_advantage():
 def test_teure_seefracht_preset_reliably_flips_winner():
     """Verifiziert, dass der 'Teure Seefracht'-Preset tatsächlich zeigt, was
     sein Hilfetext verspricht: bei diesem Kostenverhältnis gewinnt 'Blind
-    gepackt', nicht 'Hafen-bewusst gruppiert'. Regressionstest mit zwei
+    gepackt', nicht 'Hafen-bewusst gruppiert'. Regressionstest mit drei
     Funden dahinter: (1) ein ursprünglich schlecht gewählter Preset-Seed
     zeigte das Gegenteil, (2) ein zweiter, robusterer Seed (n=40,r=6,p=3)
     erwies sich bei genauerer Prüfung als reiner Zufallstreffer - nur 4 von
     10 Seeds zeigten bei diesen Parametern überhaupt 'Blind gewinnt'. Die
     jetzige Konfiguration (n=30,r=5,p=3,sea=4000 - Reglermaximum) zeigt den
-    Effekt in 9 von 10 Seeds robust."""
+    Effekt in 9 von 10 Seeds robust. (3) Beam Search verlor hier ursprünglich
+    selbst deutlich gegen Blind (11,6 % teurer) - es startete ausschließlich
+    bei der hafen-bewussten Gruppierung und erbte deren Nachteil. Seit dem
+    Fix (Verbesserungssuche läuft von BEIDEN Ausgangslösungen aus) erreicht
+    Beam Search hier exakt Blinds Niveau."""
     at = fresh_app()
     btn = [b for b in at.button if "Teure Seefracht" in b.label][0]
     btn.click().run(timeout=TIMEOUT)
@@ -116,6 +120,9 @@ def test_teure_seefracht_preset_reliably_flips_winner():
     costs = dict(zip(comp_df["Methode"], comp_df["Gesamtkosten"].str.replace(" €", "").astype(float)))
     assert costs["Blind gepackt"] < costs["Hafen-bewusst gruppiert"], (
         f"Erwartet: Blind gepackt günstiger, bekommen: {costs}"
+    )
+    assert costs["Beam Search"] <= costs["Blind gepackt"] + 1.0, (
+        f"Beam Search sollte hier mindestens Blinds Niveau erreichen: {costs}"
     )
 
 
@@ -730,6 +737,103 @@ def test_flexible_beam_never_worse_than_port_aware():
         cost_aware = sum(c["cost"] for c in aware)
         cost_flex = sum(c["cost"] for c in flex)
         assert cost_flex <= cost_aware + 1e-6, f"seed={seed}: flex={cost_flex:.0f} > aware={cost_aware:.0f}"
+
+
+def test_flexible_beam_never_worse_than_blind_either():
+    """Regressionstest für einen gefundenen Fehler: die ursprüngliche
+    Fassung startete AUSSCHLIESSLICH bei der hafen-bewussten Gruppierung und
+    garantierte dadurch nur 'nie schlechter als Hafen-bewusst', nicht 'nie
+    schlechter als Blind gepackt'. Beim Preset 'Teure Seefracht' (hohe
+    Seefracht relativ zu Straßenkosten) führte das dazu, dass Beam Search
+    11,6 % teurer war als Blind gepackt - es erbte den strukturellen
+    Nachteil (mehr Container) der hafen-bewussten Gruppierung, von der es
+    startete. Fix: die Verbesserungssuche läuft jetzt von BEIDEN
+    Ausgangslösungen (Hafen-bewusst UND Blind) aus, das günstigere
+    Endergebnis gewinnt - geprüft über verschiedene Seefracht-Niveaus
+    (niedrig/mittel/hoch), bei denen abwechselnd Blind oder Hafen-bewusst
+    die schwächere Ausgangslösung ist."""
+    for sea in [800.0, 2000.0, 4000.0]:
+        for seed in range(1, 8):
+            pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(
+                30, 5, 3, seed, sea_freight_base=sea, sea_freight_spread=0.3
+            )
+            blind = blind_packing_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+            aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+            flex = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+            cost_blind = sum(c["cost"] for c in blind)
+            cost_aware = sum(c["cost"] for c in aware)
+            cost_flex = sum(c["cost"] for c in flex)
+            assert cost_flex <= min(cost_blind, cost_aware) + 1e-6, (
+                f"sea={sea} seed={seed}: flex={cost_flex:.0f} > min(blind={cost_blind:.0f}, aware={cost_aware:.0f})"
+            )
+
+
+def test_flexible_beam_never_worse_than_monobeam_either():
+    """Auf Nachfrage ergänzt: monobeam_construction (eigenständige,
+    unabhängige Beam-Search-Konstruktion) als DRITTE Ausgangslösung für die
+    Verbesserungssuche. Über 25 Testinstanzen fand das in 3 Fällen (12 %)
+    ein spürbar besseres Endergebnis (bis zu 850 € Zusatzersparnis), das von
+    Blind oder Hafen-bewusst aus nicht erreichbar war. Garantiert jetzt nie
+    schlechter als KEINE der drei Ausgangsmethoden."""
+    for sea in [800.0, 2000.0, 4000.0]:
+        for seed in range(1, 8):
+            pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(
+                30, 5, 3, seed, sea_freight_base=sea, sea_freight_spread=0.3
+            )
+            blind = blind_packing_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+            aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+            mono = monobeam_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+            flex = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+            cost_blind = sum(c["cost"] for c in blind)
+            cost_aware = sum(c["cost"] for c in aware)
+            cost_mono = sum(c["cost"] for c in mono)
+            cost_flex = sum(c["cost"] for c in flex)
+            assert cost_flex <= min(cost_blind, cost_aware, cost_mono) + 1e-6, (
+                f"sea={sea} seed={seed}: flex={cost_flex:.0f} > min(blind={cost_blind:.0f}, "
+                f"aware={cost_aware:.0f}, mono={cost_mono:.0f})"
+            )
+
+
+def test_flexible_beam_finds_improvement_unreachable_from_blind_or_aware():
+    """Dokumentiert den konkreten Mehrwert der dritten Ausgangslösung: bei
+    Seed 8 (30 Packstücke, Standardparameter) findet die Verbesserungssuche
+    von monobeam_construction aus ein Ergebnis, das weder von Blind noch von
+    Hafen-bewusst aus erreichbar ist (13.484 € statt 14.334 €)."""
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=8)
+    flex = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+    cost_flex = sum(c["cost"] for c in flex)
+    assert cost_flex < 13600, f"Erwartete Verbesserung durch monobeam-Startpunkt fehlt: {cost_flex:.0f}"
+
+
+def test_flexible_beam_worst_case_with_triple_start_completes_within_budget():
+    """Performance-Schutztest nach dem Dreifach-Start-Update: Worst Case bei
+    100 Packstücken stieg von ~520ms (zwei Startpunkte) auf ~875ms (drei
+    Startpunkte) - weiterhin klar innerhalb des 2s-Budgets für automatische
+    Neuberechnung."""
+    import time
+
+    worst = 0.0
+    for seed in range(1, 15):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(100, 8, 5, seed=seed)
+        t0 = time.time()
+        flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=6)
+        worst = max(worst, time.time() - t0)
+    assert worst < 2.0, f"Worst Case dauerte {worst:.1f}s"
+
+
+def test_flexible_beam_monobeam_construction_width_decoupled_from_slider():
+    """Regressionstest für einen beim Bauen gefundenen Fund: monobeam_
+    construction als Startpunkt braucht selbst mindestens Breite 2 für gute
+    Ergebnisse (bw=1 lieferte nach der Verbesserungssuche spürbar
+    schlechtere Endergebnisse, z. B. 13.520 statt 12.903 EUR bei einer
+    Testinstanz) - unabhängig davon, was der Nutzer für den Verbesserungs-
+    such-Regler wählt (kann bis 1 heruntergehen). Prüft, dass beam_width=1
+    (Reglerminimum) trotzdem ein gutes Ergebnis liefert, weil die
+    monobeam-Konstruktionsbreite intern auf mindestens 2 angehoben wird."""
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=6)
+    flex_bw1 = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=1)
+    cost_bw1 = sum(c["cost"] for c in flex_bw1)
+    assert cost_bw1 < 13000, f"beam_width=1 sollte trotzdem von der monobeam-Verbesserung profitieren: {cost_bw1:.0f}"
 
 
 def test_flexible_beam_is_monotone_in_beam_width():

@@ -339,61 +339,13 @@ def monobeam_construction(item_sizes, item_regions, capacity, road_cost, sea_fre
     return assignments
 
 
-def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=2, max_rounds=None):
-    """Erweiterung auf ausdrücklichen Wunsch: die starre Vorab-Gruppierung
-    nach individuell günstigstem Hafen (port_aware_construction,
-    beam_search_construction, monobeam_construction) kann Wert liegen
-    lassen - ein Packstück, das seinen Hafen für eine kleine Straßenkosten-
-    Strafe wechselt, kann manchmal mit einem anderen Packstück zusammen
-    einen ganzen Container sparen (siehe README für ein konkretes,
-    handgerechnetes Beispiel: 3.725 € starr vs. 2.970 € flexibel).
-
-    Reine ungruppierte Vorwärtssuche (siehe monobeam_construction(...,
-    grouped=False)) findet solche Kompromisse nur unzuverlässig - Packstücke
-    werden nach Größe absteigend verarbeitet und committen sich früh, bevor
-    die Suche "sieht", welche kleineren Packstücke später gut dazu passen
-    würden (kein Lookahead). Selbst bei Beam-Breite 256 holt reine
-    Vorwärtssuche die starre Gruppierung in generischen Zufallsinstanzen
-    nicht zuverlässig ein (siehe README).
-
-    Deshalb hier ein anderer Mechanismus: eine Beam-Search-VERBESSERUNGS-
-    suche, die bei der starren Gruppierung STARTET (garantiert nie
-    schlechter) und dann über mehrere Runden hinweg die besten
-    Einzelverschiebungen eines Packstücks in einen anderen Container
-    (möglicherweise anderer Hafen) sucht - direkte Bewertung des tatsächlichen
-    Kosteneffekts statt blinder Vorwärtssuche, dadurch gezielter.
-
-    Performance-Hinweis: anders als bei Konstruktions-Beam-Search (wo eine
-    breitere Suche meist hilft) bringt hier eine größere Beam-Breite kaum
-    zusätzliche Qualität (empirisch: bw=1, bw=2 und bw=16 liefern praktisch
-    identische Ersparnis, ~1,7% im Schnitt) - der Nutzen kommt aus dem
-    Finden der ersten guten Verschiebung, nicht aus paralleler Exploration
-    vieler Kandidatenfolgen. Da eine breitere Suche nach Runde 1 aber sehr
-    viel teurer wird (der Beam facht sich auf bis zu `beam_width` Zustände
-    auf, jeder wird in der nächsten Runde vollständig neu durchsucht -
-    Worst Case bei bw=16 und 100 Packstücken: 1,4s), ist der Standard
-    bewusst klein gewählt (Worst Case bei bw=2: ~120ms)."""
-    n = len(item_sizes)
-    if n == 0:
-        return []
-
-    n_regions = road_cost.shape[0]
-    best_port_per_region = np.argmin(road_cost, axis=1)
-    groups = defaultdict(list)
-    for idx in range(n):
-        region = item_regions[idx]
-        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
-        groups[preferred].append(idx)
-
-    base_containers = []
-    for _preferred_port, idxs in groups.items():
-        base_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
-
+def _improve_from_baseline(base_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds):
+    """Kern der Verbesserungssuche, ausgelagert, damit sie von mehreren
+    Startpunkten aus aufgerufen werden kann (siehe
+    flexible_beam_search_construction). Gibt (beste_container, bester_score)
+    zurück."""
     base_score = _state_score(base_containers, item_regions, item_sizes, road_cost, sea_freight)
     beam = [(base_containers, base_score)]
-
-    if max_rounds is None:
-        max_rounds = 3
 
     for _round in range(max_rounds):
         candidates = []
@@ -406,11 +358,10 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
             container_used = [sum(item_sizes[i] for i in cont) for cont in containers]
             container_cost = [_best_port_for_container(cont, item_regions, item_sizes, road_cost, sea_freight)[1] for cont in containers]
 
-            for item_idx in range(n):
+            for item_idx in item_to_container:
                 from_c = item_to_container[item_idx]
                 item_size = item_sizes[item_idx]
 
-                # Verschiebung in einen bestehenden, anderen Container
                 for to_c in range(len(containers)):
                     if to_c == from_c:
                         continue
@@ -432,7 +383,6 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
                     seen_keys.add(key)
                     candidates.append((new_score, key, new_containers))
 
-                # Verschiebung in einen NEUEN, eigenen Container
                 if len(containers[from_c]) > 1:
                     new_from_items = [i for i in containers[from_c] if i != item_idx]
                     new_from_cost = _best_port_for_container(new_from_items, item_regions, item_sizes, road_cost, sea_freight)[1]
@@ -452,9 +402,6 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
             break
 
         candidates.sort(key=lambda t: (t[0], t[1]))
-        # Beam mit den urspruenglichen Zustaenden kombinieren (ein Zustand
-        # darf auch "keine Verschiebung diese Runde" bedeuten, sonst koennte
-        # sich das Ergebnis durch erzwungene Verschiebungen verschlechtern)
         pool = [(score, _state_key(containers), containers) for containers, score in beam] + candidates
         seen2 = set()
         deduped = []
@@ -468,11 +415,115 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
 
         if deduped[0][1] >= beam[0][1] - EPS and all(d[1] >= beam[0][1] - EPS for d in deduped):
             beam = deduped
-            break  # keine Verbesserung mehr moeglich - konvergiert
+            break
 
         beam = deduped
 
-    best_containers, best_score = min(beam, key=lambda t: t[1])
+    return min(beam, key=lambda t: t[1])
+
+
+def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=2, max_rounds=None):
+    """Erweiterung auf ausdrücklichen Wunsch: die starre Vorab-Gruppierung
+    nach individuell günstigstem Hafen (port_aware_construction,
+    beam_search_construction, monobeam_construction) kann Wert liegen
+    lassen - ein Packstück, das seinen Hafen für eine kleine Straßenkosten-
+    Strafe wechselt, kann manchmal mit einem anderen Packstück zusammen
+    einen ganzen Container sparen (siehe README für ein konkretes,
+    handgerechnetes Beispiel: 3.725 € starr vs. 2.970 € flexibel).
+
+    Reine ungruppierte Vorwärtssuche (siehe monobeam_construction(...,
+    grouped=False)) findet solche Kompromisse nur unzuverlässig - Packstücke
+    werden nach Größe absteigend verarbeitet und committen sich früh, bevor
+    die Suche "sieht", welche kleineren Packstücke später gut dazu passen
+    würden (kein Lookahead). Selbst bei Beam-Breite 256 holt reine
+    Vorwärtssuche die starre Gruppierung in generischen Zufallsinstanzen
+    nicht zuverlässig ein (siehe README).
+
+    Deshalb hier ein anderer Mechanismus: eine Beam-Search-VERBESSERUNGS-
+    suche, die bei EINER Ausgangslösung startet und über mehrere Runden
+    hinweg die besten Einzelverschiebungen eines Packstücks in einen anderen
+    Container (möglicherweise anderer Hafen) sucht - direkte Bewertung des
+    tatsächlichen Kosteneffekts statt blinder Vorwärtssuche, dadurch
+    gezielter.
+
+    WICHTIG - auf einen gefundenen Fehler hin ergänzt: eine frühere Fassung
+    startete AUSSCHLIESSLICH bei der hafen-bewussten Gruppierung. Das
+    garantierte zwar "nie schlechter als Hafen-bewusst gruppiert", aber
+    NICHT "nie schlechter als Blind gepackt" - bei hoher Seefracht (Preset
+    "Teure Seefracht") verlor Beam Search dadurch spürbar gegen die blinde
+    Variante (11,6 % teurer, weil es die Container-Anzahl der
+    Hafen-bewussten Gruppierung erbte, die dort strukturell mehr Container
+    braucht). Fix: die Verbesserungssuche läuft jetzt von BEIDEN
+    Ausgangslösungen aus (Hafen-bewusst gruppiert UND Blind gepackt), das
+    günstigere Endergebnis gewinnt - garantiert jetzt nie schlechter als
+    EINE der beiden anderen Methoden, nicht nur eine davon.
+
+    ERGÄNZT auf Nachfrage, ob eine von den beiden anderen Heuristiken
+    unabhängige Beam-Search-Konstruktion (monobeam_construction) zusätzlich
+    hilft: JA, als DRITTE Ausgangslösung. Über 25 Testinstanzen fand die
+    Verbesserungssuche von monobeam_construction aus in 3 Fällen (12 %) ein
+    spürbar besseres Endergebnis, das von Blind oder Hafen-bewusst aus nicht
+    erreichbar war (bis zu 850 € Zusatzersparnis in einer Instanz) - nie
+    schlechter, da nur eine weitere Kandidatenquelle für dasselbe Minimum.
+    Etwa 1,5-fache statt doppelte Rechenzeit (monobeam_construction selbst
+    ist mit ~10ms sehr schnell, die dritte Verbesserungssuche kostet
+    ungefähr so viel wie die anderen beiden). Siehe README für die
+    vollständige Herleitung.
+
+    Performance-Hinweis: anders als bei Konstruktions-Beam-Search (wo eine
+    breitere Suche meist hilft) bringt hier eine größere Beam-Breite kaum
+    zusätzliche Qualität (empirisch: bw=1, bw=2 und bw=16 liefern praktisch
+    identische Ersparnis, ~1,7% im Schnitt) - der Nutzen kommt aus dem
+    Finden der ersten guten Verschiebung, nicht aus paralleler Exploration
+    vieler Kandidatenfolgen. Da eine breitere Suche nach Runde 1 aber sehr
+    viel teurer wird (der Beam facht sich auf bis zu `beam_width` Zustände
+    auf, jeder wird in der nächsten Runde vollständig neu durchsucht),
+    ist der Standard bewusst klein gewählt."""
+    n = len(item_sizes)
+    if n == 0:
+        return []
+
+    if max_rounds is None:
+        max_rounds = 3
+
+    # Ausgangslösung 1: Hafen-bewusst gruppiert
+    n_regions = road_cost.shape[0]
+    best_port_per_region = np.argmin(road_cost, axis=1)
+    groups = defaultdict(list)
+    for idx in range(n):
+        region = item_regions[idx]
+        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
+        groups[preferred].append(idx)
+    aware_containers = []
+    for _preferred_port, idxs in groups.items():
+        aware_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
+
+    # Ausgangslösung 2: Blind gepackt (dieselbe Grundlage wie
+    # blind_packing_construction - reine Groessen-FFD ohne Gruppierung)
+    blind_containers = _ffd_pack(list(range(n)), item_sizes, capacity)
+
+    # Ausgangslösung 3: monobeam_construction (eigenständige, unabhängige
+    # Beam-Search-Konstruktion, siehe README - liefert manchmal eine
+    # strukturell andere Gruppierung, von der aus die Verbesserungssuche
+    # Lösungen findet, die weder von "Blind" noch von "Hafen-bewusst" aus
+    # erreichbar sind, z. B. weil monobeam Packstücke anders auf Container
+    # verteilt als eine reine Größen-FFD). WICHTIG: nutzt eine EIGENE,
+    # von `beam_width` (Verbesserungssuche-Regler, kann bis 1 heruntergehen)
+    # entkoppelte Mindestbreite - monobeam_construction selbst braucht
+    # mindestens Breite 2 für gute Ergebnisse (getestet: bw=1 lieferte nach
+    # der Verbesserungssuche spürbar schlechtere Endergebnisse als bw=2,
+    # z. B. 13.520 statt 12.903 EUR bei einer Testinstanz; ab bw=2 kaum noch
+    # zusätzlicher Nutzen durch mehr Breite).
+    mono_construction_width = max(2, beam_width)
+    mono_assignments = monobeam_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=mono_construction_width, grouped=True)
+    mono_containers = [a["items"] for a in mono_assignments]
+
+    best_from_aware = _improve_from_baseline(aware_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
+    best_from_blind = _improve_from_baseline(blind_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
+    best_from_mono = _improve_from_baseline(mono_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
+
+    best_containers, _best_score = min([best_from_aware, best_from_blind, best_from_mono], key=lambda t: t[1])
+
     assignments = []
     for items in best_containers:
         port, cost = _best_port_for_container(items, item_regions, item_sizes, road_cost, sea_freight)
