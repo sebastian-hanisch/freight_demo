@@ -194,7 +194,13 @@ def test_permalink_url_params_are_unique():
 
 from freight_data import generate_freight_scenario
 from freight_evaluation import evaluate_assignment
-from freight_heuristics import beam_search_construction, blind_packing_construction, monobeam_construction, port_aware_construction
+from freight_heuristics import (
+    beam_search_construction,
+    blind_packing_construction,
+    flexible_beam_search_construction,
+    monobeam_construction,
+    port_aware_construction,
+)
 
 
 def test_generate_freight_scenario_shapes():
@@ -552,6 +558,59 @@ def test_monobeam_worst_case_completes_within_budget():
     assert elapsed < 5.0, f"monobeam Worst Case dauerte {elapsed:.1f}s"
 
 
+def test_monobeam_ungrouped_variant_still_monotone():
+    """Die urspruengliche (nicht gruppierte) Fassung bleibt ueber grouped=False
+    verfuegbar und muss ebenfalls monoton bleiben."""
+    for seed in range(1, 8):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        costs = []
+        for bw in [1, 4, 16]:
+            assignments = monobeam_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=bw, grouped=False)
+            costs.append(sum(c["cost"] for c in assignments))
+        for i in range(len(costs) - 1):
+            assert costs[i] >= costs[i + 1] - 1e-6
+
+
+def test_monobeam_grouping_fixes_unfair_comparison_with_port_aware():
+    """Regressionstest für einen beim Skalierungsvergleich gefundenen Fehler:
+    die ursprüngliche monobeam-Fassung gruppierte NICHT nach Hafen-Präferenz
+    (anders als beam_search_construction, das explizit auf port_aware's
+    Gruppierung aufbaut) - dadurch schnitt monobeam bei größeren
+    Probleminstanzen bis zu 9% SCHLECHTER ab als port_aware_construction,
+    obwohl es strukturell hätte mindestens gleichauf liegen sollen. Mit
+    grouped=True (neuer Standard) darf monobeam nicht mehr schlechter als
+    port_aware sein."""
+    for seed in range(1, 8):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(60, 6, 3, seed=seed)
+        aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        mono_grouped = monobeam_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=8, grouped=True)
+        cost_aware = sum(c["cost"] for c in aware)
+        cost_mono = sum(c["cost"] for c in mono_grouped)
+        assert cost_mono <= cost_aware + 1e-6, f"seed={seed}: monobeam (grouped) {cost_mono:.0f} > aware {cost_aware:.0f}"
+
+
+
+def test_beam_advantage_over_port_aware_stays_small_across_problem_sizes():
+    """Dokumentiert den zentralen, auf Nutzeranfrage untersuchten Befund: der
+    Vorteil der Beam-Varianten gegenüber 'Hafen-bewusst gruppiert' bleibt
+    über einen weiten Bereich von Probleminstanzgrößen klein (nicht etwa
+    'zu klein, um zu wirken' und dann groß bei größeren Instanzen) - die
+    Erklärung liegt nicht in der Instanzgröße, sondern darin, dass
+    First-Fit-Decreasing für dieses Bin-Packing-Teilproblem bereits nahe am
+    Optimum liegt, unabhängig von n (siehe README)."""
+    for n_items in [20, 60, 150]:
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(n_items, 6, 3, seed=1)
+        aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        beam = beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=16)
+        cost_aware = sum(c["cost"] for c in aware)
+        cost_beam = sum(c["cost"] for c in beam)
+        improvement_pct = (cost_aware - cost_beam) / cost_aware * 100
+        assert 0 <= improvement_pct < 3.0, (
+            f"n_items={n_items}: Verbesserung {improvement_pct:.2f}% liegt außerhalb des "
+            f"erwarteten kleinen Bereichs (0-3%) - Skalierungsverhalten könnte sich geändert haben"
+        )
+
+
 def test_ensemble_vs_monobeam_comparison_produces_valid_reproducible_numbers():
     """Kein Korrektheits-, sondern ein Dokumentationstest: hält die im
     README berichteten Vergleichszahlen (beide Ansätze liefern brauchbare,
@@ -571,3 +630,106 @@ def test_ensemble_vs_monobeam_comparison_produces_valid_reproducible_numbers():
     # durchgehend (empirisch: exakt 5/10 vs 5/10 bei bw=16 im Test)
     assert ensemble_better > 0, "Ensemble-Ansatz gewinnt in keinem Testfall - unerwartet"
     assert monobeam_better > 0, "monobeam gewinnt in keinem Testfall - unerwartet"
+
+
+# --- flexible_beam_search_construction: Erweiterung auf Nutzeranfrage ---
+# (starre Hafen-Gruppierung ist nicht immer optimal - gezielte
+# Verbesserungssuche statt reiner Vorwärtssuche)
+
+def test_flexible_beam_finds_known_handcalculated_improvement():
+    """Kernkorrektheitstest: das handgerechnete Beispiel aus der Diskussion,
+    das zeigt, dass die starre Gruppierung Geld liegen lässt. Ein Packstück
+    (Region A, knapper Vorteil Hafen 0: 10 vs. 11) wechselt für eine kleine
+    Straßenkosten-Strafe (45 €) zu Hafen 1, um mit einem Region-B-Packstück
+    (starker Vorteil Hafen 1) exakt einen Container zu füllen - spart eine
+    ganze Seefracht (800 €). Erwartetes Ergebnis: 2.970 € statt 3.725 €."""
+    road_cost = np.array([
+        [10.0, 11.0],
+        [50.0, 5.0],
+    ])
+    sea_freight = np.array([800.0, 800.0])
+    item_sizes = np.array([60.0, 45.0, 55.0])
+    item_regions = np.array([0, 0, 1])
+
+    aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+    flex = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+
+    cost_aware = sum(c["cost"] for c in aware)
+    cost_flex = sum(c["cost"] for c in flex)
+    assert cost_aware == pytest.approx(3725.0, abs=0.01)
+    assert cost_flex == pytest.approx(2970.0, abs=0.01)
+    assert cost_flex < cost_aware
+
+
+def test_flexible_beam_never_worse_than_port_aware():
+    """Startet bei der starren Gruppierung und verbessert nur bei
+    nachgewiesenem Kostenvorteil - darf sie nie verschlechtern."""
+    for seed in range(1, 15):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        flex = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        cost_aware = sum(c["cost"] for c in aware)
+        cost_flex = sum(c["cost"] for c in flex)
+        assert cost_flex <= cost_aware + 1e-6, f"seed={seed}: flex={cost_flex:.0f} > aware={cost_aware:.0f}"
+
+
+def test_flexible_beam_is_monotone_in_beam_width():
+    for seed in range(1, 8):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        costs = []
+        for bw in [1, 2, 4, 6]:
+            assignments = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=bw)
+            costs.append(sum(c["cost"] for c in assignments))
+        for i in range(len(costs) - 1):
+            assert costs[i] >= costs[i + 1] - 1e-6, f"seed={seed}: {costs}"
+
+
+def test_flexible_beam_structurally_valid():
+    for seed in range(1, 6):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        assignments = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        _validate_assignment(assignments, item_sizes, 100.0, 30)
+
+
+def test_flexible_beam_handles_zero_items():
+    road_cost = np.zeros((3, 2))
+    sea_freight = np.zeros(2)
+    assignments = flexible_beam_search_construction(np.array([]), np.array([], dtype=int), 100.0, road_cost, sea_freight)
+    assert assignments == []
+
+
+def test_flexible_beam_width_scaling_quality_is_similar():
+    """Regressionstest für einen beim Bauen gefundenen Performance-Fund: bei
+    dieser Verbesserungssuche bringt eine größere Beam-Breite kaum
+    zusätzliche Qualität (anders als bei Konstruktions-Beam-Search) - bw=1
+    und bw=6 sollten sich im Schnitt kaum unterscheiden."""
+    total_pct_bw1, total_pct_bw6 = 0.0, 0.0
+    n = 0
+    for seed in range(1, 8):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        aware_cost = sum(c["cost"] for c in port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight))
+        if aware_cost <= 0:
+            continue
+        c1 = sum(c["cost"] for c in flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=1))
+        c6 = sum(c["cost"] for c in flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=6))
+        total_pct_bw1 += (aware_cost - c1) / aware_cost * 100
+        total_pct_bw6 += (aware_cost - c6) / aware_cost * 100
+        n += 1
+    assert abs(total_pct_bw1 / n - total_pct_bw6 / n) < 1.0
+
+
+def test_flexible_beam_worst_case_completes_within_budget():
+    """Performance-Schutztest: wird bei jeder UI-Interaktion automatisch neu
+    berechnet (nicht Button-gesteuert). Regler ist bewusst auf 1-6 begrenzt,
+    weil breitere Suche bei dieser Verbesserungsheuristik schnell teuer
+    wird (empirisch: bw=32 dauerte bis zu 3,4s bei 100 Packstücken -
+    deshalb der begrenzte Regler-Bereich)."""
+    import time
+
+    worst = 0.0
+    for seed in range(1, 8):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(100, 8, 5, seed=seed)
+        t0 = time.time()
+        flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=6)
+        worst = max(worst, time.time() - t0)
+    assert worst < 2.0, f"Worst Case dauerte {worst:.1f}s"

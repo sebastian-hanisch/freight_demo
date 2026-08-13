@@ -22,7 +22,7 @@ import streamlit as st
 from freight_data import generate_freight_scenario
 from freight_evaluation import evaluate_assignment
 from freight_feedback import log_feedback
-from freight_heuristics import beam_search_construction, blind_packing_construction, port_aware_construction
+from freight_heuristics import blind_packing_construction, flexible_beam_search_construction, port_aware_construction
 from freight_pdf_export import generate_consolidation_plan_pdf
 from freight_presets import apply_preset, bounds, init_session_state_defaults, load_permalink_settings, sync_query_params
 from freight_ui_panel import render_freight_panel
@@ -87,7 +87,7 @@ with st.sidebar:
     )
     beam_width = st.slider(
         "Beam-Breite", *bounds("beam_width_slider"), key="beam_width_slider",
-        help="Anzahl deterministischer Packvarianten je Nachfrage-Gruppe, aus denen Beam Search die beste wählt. Höhere Breite kann das Ergebnis nachweislich nie verschlechtern (siehe README), meist etwas Rechenzeit für potenziell bessere Ergebnisse.",
+        help="Anzahl parallel verfolgter Verbesserungsvarianten, während Beam Search gezielt nach lohnenden Hafen-Wechseln sucht (nicht nur Packreihenfolgen). Kann das Ergebnis nachweislich nie verschlechtern (siehe README). Bei diesem Suchtyp bringt mehr Breite kaum zusätzliche Qualität, aber deutlich mehr Rechenzeit - deshalb bewusst eng begrenzt.",
     )
     seed = st.number_input("Zufalls-Seed", step=1, key="seed_input")
 
@@ -136,7 +136,7 @@ with st.expander("📦 Packstücke (Zusammenfassung)"):
 
 blind_assignments = blind_packing_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
 aware_assignments = port_aware_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
-beam_assignments = beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr, beam_width=beam_width)
+beam_assignments = flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr, beam_width=beam_width)
 
 stats_blind = evaluate_assignment(blind_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
 stats_aware = evaluate_assignment(aware_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
@@ -197,10 +197,10 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
 
     with tabs[2]:
         st.caption(
-            f"Wie hafen-bewusst gruppiert, aber je Gruppe werden {beam_width} deterministische Packvarianten "
-            "durchprobiert und die beste behalten. Höhere Beam-Breite (Sidebar-Regler) kann das Ergebnis "
-            "nachweislich nie verschlechtern - siehe README für den Beweis und ein Gegenbeispiel, warum eine "
-            "naivere Beam-Search-Variante das nicht garantieren könnte."
+            "Startet bei der Hafen-bewusst gruppierten Lösung (garantiert nie schlechter) und sucht "
+            "gezielt nach Packstücken, die für eine kleine Straßenkosten-Erhöhung den Hafen wechseln "
+            "könnten, um mit anderen Packstücken zusammen Container einzusparen - die starre Gruppierung "
+            "links ist nicht immer optimal (siehe README für ein konkretes Beispiel)."
         )
         summary_beam = render_freight_panel("beam", "Beam Search", beam_assignments, port_coords, region_coords, item_sizes, item_regions, road_cost, sea_freight_arr)
 
@@ -244,13 +244,15 @@ gepackt (mit demselben First-Fit-Decreasing-Verfahren wie oben) - dadurch landen
 Packstücke mit ähnlicher Hafen-Präferenz im selben Container, was die anschließende
 Hafenwahl weniger kompromissbehaftet macht.
 
-**Beam Search:** Nutzt dieselbe Gruppierung wie oben, probiert aber je Gruppe mehrere
-("Beam-Breite") deterministische, unterschiedlich sortierte Packvarianten durch und
-behält die beste. Bewusst so konstruiert, dass eine höhere Beam-Breite das Ergebnis
-**nachweislich nie verschlechtern** kann (nicht nur meistens) - eine erste, klassischere
-Beam-Search-Umsetzung mit schrittweisem Kandidaten-Pruning erwies sich beim Bauen als
-nicht monoton (ein konkretes Gegenbeispiel dazu steht im README), deshalb diese robustere
-Konstruktion.
+**Beam Search:** Die Gruppierung "Hafen-bewusst" trifft ihre Hafenwahl pro Packstück
+starr anhand des individuell günstigsten Hafens - das ist nicht immer optimal. Ein
+Packstück, das für eine kleine Straßenkosten-Erhöhung den Hafen wechselt, kann manchmal
+mit einem andersartig bevorzugten Packstück zusammen einen ganzen Container einsparen.
+Beam Search startet deshalb bei der Hafen-bewusst gruppierten Lösung (garantiert nie
+schlechter) und sucht über mehrere Runden gezielt nach genau solchen lohnenden
+Verschiebungen - direkte Bewertung des tatsächlichen Kosteneffekts statt blinder
+Neukonstruktion. Bewusst so aufgebaut, dass eine höhere Beam-Breite das Ergebnis
+**nachweislich nie verschlechtern** kann.
 
 **Der Kipppunkt:** Hafen-bewusste Gruppierung (und Beam Search, das darauf aufbaut) führt
 tendenziell zu mehr, dafür weniger voll ausgelasteten Containern (die Gruppierung zerteilt

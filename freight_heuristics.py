@@ -223,48 +223,18 @@ def _state_key(containers):
     return tuple(sorted(tuple(sorted(c)) for c in containers))
 
 
-def monobeam_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=4):
-    """Direkte Adaption von monobeam (Lemons, Linares López, Holte & Ruml,
-    "Beam Search: Faster and Monotonic", ICAPS 2022) auf die Container-
-    Konsolidierung - der andere, im Paper vorgeschlagene Mechanismus für
-    Monotonie, zum Vergleich mit `beam_search_construction` (eigener
-    Ensemble-Ansatz) implementiert.
+def _monobeam_pack(item_idxs, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width):
+    """Kernlogik von monobeam (siehe monobeam_construction) über eine
+    gegebene Teilmenge von Packstück-Indizes. Ausgelagert, damit sie -
+    analog zu beam_search_construction - je Hafen-Präferenz-Gruppe separat
+    angewendet werden kann (siehe monobeam_construction)."""
+    order = sorted(item_idxs, key=lambda i: -item_sizes[i])
 
-    Kernidee des Papers: Der Beam wird als GEORDNETE Folge nummerierter
-    Slots behandelt und SEQUENZIELL gefüllt - Slot 1 zuerst, dann Slot 2,
-    usw. Alle Slots teilen sich einen gemeinsamen Kandidatenpool: Slot c
-    expandiert seinen aktuellen Zustand, legt die Kinder in den Pool, und
-    entnimmt SOFORT das beste verbliebene Element des Pools für den
-    nächsten Zustand von Slot c - bevor Slot c+1 überhaupt expandiert wird.
-    Dadurch hat Slot c nur Zugriff auf Kandidaten aus Slots 1..c, nie aus
-    späteren Slots. Das Paper beweist per Induktion (ihr Lemma 1): die Wahl
-    für Slot c ist dadurch komplett unabhängig von der Beam-Breite, solange
-    diese ≥ c ist - eine schmalere Suche ist buchstäblich ein Präfix einer
-    breiteren, nicht nur "meistens ähnlich".
-
-    Vereinfacht gegenüber dem Original: unser Problem hat eine FESTE Anzahl
-    Entscheidungsebenen (ein Packstück nach dem anderen, feste Reihenfolge
-    nach Größe absteigend - kein variabler Zieltest wie bei Zustandsraum-
-    suche). Pathmax, Inkumbent-Verwaltung über unterschiedliche Tiefen und
-    die Duplikat-Slot-Verwaltung des Originals (Algorithmus 3 im Paper)
-    werden dadurch nicht gebraucht - nach der letzten Ebene ist jeder
-    gefüllte Slot eine vollständige, vergleichbare Lösung.
-
-    Kosten werden INKREMENTELL fortgeschrieben (nur der durch das aktuelle
-    Packstück veränderte Container wird neu bewertet, nicht der gesamte
-    Zustand), und der Kandidatenpool ist eine echte Prioritätswarteschlange
-    (heapq) statt einer bei jedem Slot neu sortierten Liste - beides war
-    nötig, um den Geschwindigkeitsvergleich mit dem Ensemble-Ansatz nicht
-    unfair zu verzerren (siehe README)."""
-    n = len(item_sizes)
-    order = sorted(range(n), key=lambda i: -item_sizes[i])
-
-    # beam[c] = (containers, score) oder None
     beam = [None] * beam_width
     beam[0] = ([], 0.0)
 
     for idx in order:
-        candidates = []  # heapq-Prioritätswarteschlange, gemeinsam ueber alle Slots dieser Ebene
+        candidates = []
         next_beam = [None] * beam_width
 
         for c in range(beam_width):
@@ -297,10 +267,212 @@ def monobeam_construction(item_sizes, item_regions, capacity, road_cost, sea_fre
             if score < best_cost:
                 best_cost = score
                 best_containers = containers
+    return best_containers if best_containers is not None else []
 
-    if best_containers is None:
+
+def monobeam_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=4, grouped=True):
+    """Adaption von monobeam (Lemons, Linares López, Holte & Ruml, "Beam
+    Search: Faster and Monotonic", ICAPS 2022) auf die Container-
+    Konsolidierung - der andere, im Paper vorgeschlagene Mechanismus für
+    Monotonie, zum Vergleich mit `beam_search_construction` (eigener
+    Ensemble-Ansatz) implementiert.
+
+    Kernidee des Papers: Der Beam wird als GEORDNETE Folge nummerierter
+    Slots behandelt und SEQUENZIELL gefüllt - Slot 1 zuerst, dann Slot 2,
+    usw. Alle Slots teilen sich einen gemeinsamen Kandidatenpool: Slot c
+    expandiert seinen aktuellen Zustand, legt die Kinder in den Pool, und
+    entnimmt SOFORT das beste verbliebene Element des Pools für den
+    nächsten Zustand von Slot c - bevor Slot c+1 überhaupt expandiert wird.
+    Dadurch hat Slot c nur Zugriff auf Kandidaten aus Slots 1..c, nie aus
+    späteren Slots. Das Paper beweist per Induktion (ihr Lemma 1): die Wahl
+    für Slot c ist dadurch komplett unabhängig von der Beam-Breite, solange
+    diese ≥ c ist - eine schmalere Suche ist buchstäblich ein Präfix einer
+    breiteren, nicht nur "meistens ähnlich".
+
+    Vereinfacht gegenüber dem Original: unser Problem hat eine FESTE Anzahl
+    Entscheidungsebenen (ein Packstück nach dem anderen, feste Reihenfolge
+    nach Größe absteigend - kein variabler Zieltest wie bei Zustandsraum-
+    suche). Pathmax, Inkumbent-Verwaltung über unterschiedliche Tiefen und
+    die Duplikat-Slot-Verwaltung des Originals (Algorithmus 3 im Paper)
+    werden dadurch nicht gebraucht - nach der letzten Ebene ist jeder
+    gefüllte Slot eine vollständige, vergleichbare Lösung.
+
+    Kosten werden INKREMENTELL fortgeschrieben (nur der durch das aktuelle
+    Packstück veränderte Container wird neu bewertet, nicht der gesamte
+    Zustand), und der Kandidatenpool ist eine echte Prioritätswarteschlange
+    (heapq) statt einer bei jedem Slot neu sortierten Liste - beides war
+    nötig, um den Geschwindigkeitsvergleich mit dem Ensemble-Ansatz nicht
+    unfair zu verzerren (siehe README).
+
+    grouped=True (Standard): wendet dieselbe Hafen-Präferenz-Gruppierung wie
+    port_aware_construction / beam_search_construction VOR der monobeam-Suche
+    an - für einen strukturell fairen Vergleich (sonst wird nicht der
+    Suchmechanismus verglichen, sondern "mit Gruppierung" gegen "ohne
+    Gruppierung"; siehe README, dieser Unterschied wurde beim Vergleich über
+    verschiedene Problemgrößen entdeckt und war zunächst nicht fair
+    berücksichtigt). grouped=False reproduziert die ursprüngliche, ungruppierte
+    Fassung."""
+    n = len(item_sizes)
+
+    if not grouped:
+        containers = _monobeam_pack(list(range(n)), item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width)
+        assignments = []
+        for items in containers:
+            port, cost = _best_port_for_container(items, item_regions, item_sizes, road_cost, sea_freight)
+            assignments.append({"items": items, "port": port, "cost": cost})
+        return assignments
+
+    n_regions = road_cost.shape[0]
+    best_port_per_region = np.argmin(road_cost, axis=1)
+    groups = defaultdict(list)
+    for idx in range(n):
+        region = item_regions[idx]
+        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
+        groups[preferred].append(idx)
+
+    assignments = []
+    for _preferred_port, idxs in groups.items():
+        containers = _monobeam_pack(idxs, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width)
+        for items in containers:
+            port, cost = _best_port_for_container(items, item_regions, item_sizes, road_cost, sea_freight)
+            assignments.append({"items": items, "port": port, "cost": cost})
+    return assignments
+
+
+def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=2, max_rounds=None):
+    """Erweiterung auf ausdrücklichen Wunsch: die starre Vorab-Gruppierung
+    nach individuell günstigstem Hafen (port_aware_construction,
+    beam_search_construction, monobeam_construction) kann Wert liegen
+    lassen - ein Packstück, das seinen Hafen für eine kleine Straßenkosten-
+    Strafe wechselt, kann manchmal mit einem anderen Packstück zusammen
+    einen ganzen Container sparen (siehe README für ein konkretes,
+    handgerechnetes Beispiel: 3.725 € starr vs. 2.970 € flexibel).
+
+    Reine ungruppierte Vorwärtssuche (siehe monobeam_construction(...,
+    grouped=False)) findet solche Kompromisse nur unzuverlässig - Packstücke
+    werden nach Größe absteigend verarbeitet und committen sich früh, bevor
+    die Suche "sieht", welche kleineren Packstücke später gut dazu passen
+    würden (kein Lookahead). Selbst bei Beam-Breite 256 holt reine
+    Vorwärtssuche die starre Gruppierung in generischen Zufallsinstanzen
+    nicht zuverlässig ein (siehe README).
+
+    Deshalb hier ein anderer Mechanismus: eine Beam-Search-VERBESSERUNGS-
+    suche, die bei der starren Gruppierung STARTET (garantiert nie
+    schlechter) und dann über mehrere Runden hinweg die besten
+    Einzelverschiebungen eines Packstücks in einen anderen Container
+    (möglicherweise anderer Hafen) sucht - direkte Bewertung des tatsächlichen
+    Kosteneffekts statt blinder Vorwärtssuche, dadurch gezielter.
+
+    Performance-Hinweis: anders als bei Konstruktions-Beam-Search (wo eine
+    breitere Suche meist hilft) bringt hier eine größere Beam-Breite kaum
+    zusätzliche Qualität (empirisch: bw=1, bw=2 und bw=16 liefern praktisch
+    identische Ersparnis, ~1,7% im Schnitt) - der Nutzen kommt aus dem
+    Finden der ersten guten Verschiebung, nicht aus paralleler Exploration
+    vieler Kandidatenfolgen. Da eine breitere Suche nach Runde 1 aber sehr
+    viel teurer wird (der Beam facht sich auf bis zu `beam_width` Zustände
+    auf, jeder wird in der nächsten Runde vollständig neu durchsucht -
+    Worst Case bei bw=16 und 100 Packstücken: 1,4s), ist der Standard
+    bewusst klein gewählt (Worst Case bei bw=2: ~120ms)."""
+    n = len(item_sizes)
+    if n == 0:
         return []
 
+    n_regions = road_cost.shape[0]
+    best_port_per_region = np.argmin(road_cost, axis=1)
+    groups = defaultdict(list)
+    for idx in range(n):
+        region = item_regions[idx]
+        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
+        groups[preferred].append(idx)
+
+    base_containers = []
+    for _preferred_port, idxs in groups.items():
+        base_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
+
+    base_score = _state_score(base_containers, item_regions, item_sizes, road_cost, sea_freight)
+    beam = [(base_containers, base_score)]
+
+    if max_rounds is None:
+        max_rounds = 3
+
+    for _round in range(max_rounds):
+        candidates = []
+        seen_keys = set()
+        for containers, score in beam:
+            item_to_container = {}
+            for c_idx, cont in enumerate(containers):
+                for item_idx in cont:
+                    item_to_container[item_idx] = c_idx
+            container_used = [sum(item_sizes[i] for i in cont) for cont in containers]
+            container_cost = [_best_port_for_container(cont, item_regions, item_sizes, road_cost, sea_freight)[1] for cont in containers]
+
+            for item_idx in range(n):
+                from_c = item_to_container[item_idx]
+                item_size = item_sizes[item_idx]
+
+                # Verschiebung in einen bestehenden, anderen Container
+                for to_c in range(len(containers)):
+                    if to_c == from_c:
+                        continue
+                    if container_used[to_c] + item_size > capacity + EPS:
+                        continue
+                    new_from_items = [i for i in containers[from_c] if i != item_idx]
+                    new_to_items = containers[to_c] + [item_idx]
+                    new_from_cost = _best_port_for_container(new_from_items, item_regions, item_sizes, road_cost, sea_freight)[1] if new_from_items else 0.0
+                    new_to_cost = _best_port_for_container(new_to_items, item_regions, item_sizes, road_cost, sea_freight)[1]
+                    new_score = score - container_cost[from_c] - container_cost[to_c] + new_from_cost + new_to_cost
+
+                    new_containers = [list(cont) for cont in containers]
+                    new_containers[from_c] = new_from_items
+                    new_containers[to_c] = new_to_items
+                    new_containers = [c for c in new_containers if c]
+                    key = _state_key(new_containers)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    candidates.append((new_score, key, new_containers))
+
+                # Verschiebung in einen NEUEN, eigenen Container
+                if len(containers[from_c]) > 1:
+                    new_from_items = [i for i in containers[from_c] if i != item_idx]
+                    new_from_cost = _best_port_for_container(new_from_items, item_regions, item_sizes, road_cost, sea_freight)[1]
+                    new_item_cost = _best_port_for_container([item_idx], item_regions, item_sizes, road_cost, sea_freight)[1]
+                    new_score = score - container_cost[from_c] + new_from_cost + new_item_cost
+
+                    new_containers = [list(cont) for cont in containers]
+                    new_containers[from_c] = new_from_items
+                    new_containers = [c for c in new_containers if c]
+                    new_containers.append([item_idx])
+                    key = _state_key(new_containers)
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        candidates.append((new_score, key, new_containers))
+
+        if not candidates:
+            break
+
+        candidates.sort(key=lambda t: (t[0], t[1]))
+        # Beam mit den urspruenglichen Zustaenden kombinieren (ein Zustand
+        # darf auch "keine Verschiebung diese Runde" bedeuten, sonst koennte
+        # sich das Ergebnis durch erzwungene Verschiebungen verschlechtern)
+        pool = [(score, _state_key(containers), containers) for containers, score in beam] + candidates
+        seen2 = set()
+        deduped = []
+        for score, key, containers in sorted(pool, key=lambda t: (t[0], t[1])):
+            if key in seen2:
+                continue
+            seen2.add(key)
+            deduped.append((containers, score))
+            if len(deduped) >= beam_width:
+                break
+
+        if deduped[0][1] >= beam[0][1] - EPS and all(d[1] >= beam[0][1] - EPS for d in deduped):
+            beam = deduped
+            break  # keine Verbesserung mehr moeglich - konvergiert
+
+        beam = deduped
+
+    best_containers, best_score = min(beam, key=lambda t: t[1])
     assignments = []
     for items in best_containers:
         port, cost = _best_port_for_container(items, item_regions, item_sizes, road_cost, sea_freight)

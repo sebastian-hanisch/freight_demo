@@ -35,7 +35,7 @@ SETTING_SPECS = {
     "capacity_slider": SettingSpec("cap", float, DEFAULT_CONTAINER_CAPACITY, 30.0, 300.0),
     "sea_freight_slider": SettingSpec("sea", float, DEFAULT_SEA_FREIGHT_BASE, 200.0, 4000.0),
     "sea_spread_slider": SettingSpec("spread", float, DEFAULT_SEA_FREIGHT_SPREAD, 0.0, 0.8),
-    "beam_width_slider": SettingSpec("beam", int, 8, 1, 32),
+    "beam_width_slider": SettingSpec("beam", int, 2, 1, 6),
     "seed_input": SettingSpec("seed", int, 42, 0, 2_000_000_000),
 }
 
@@ -45,7 +45,7 @@ def bounds(state_key):
     return spec.lo, spec.hi
 
 
-def apply_preset(n_items_val, n_regions_val, n_ports_val, capacity_val, sea_freight_val, sea_spread_val, seed_val, beam_width_val=8):
+def apply_preset(n_items_val, n_regions_val, n_ports_val, capacity_val, sea_freight_val, sea_spread_val, seed_val, beam_width_val=2):
     st.session_state["n_items_slider"] = n_items_val
     st.session_state["n_regions_slider"] = n_regions_val
     st.session_state["n_ports_slider"] = n_ports_val

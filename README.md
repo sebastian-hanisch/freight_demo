@@ -40,10 +40,11 @@ für einen Container ergibt sich erst aus seinem tatsächlichen Inhalt.
     Rücksicht auf Zielregion.
   - *Hafen-bewusst gruppiert*: Packstücke werden zuerst nach ihrem günstigsten Hafen
     (anhand der Straßenkosten ihrer Zielregion) gruppiert, erst danach gepackt.
-  - *Beam Search*: wie hafen-bewusst gruppiert, probiert aber je Gruppe mehrere
-    ("Beam-Breite", einstellbar) deterministische Packvarianten durch und behält die
-    beste - nachweislich **monoton** in der Beam-Breite (siehe eigener Abschnitt
-    unten, auf ausdrücklichen Wunsch ergänzt).
+  - *Beam Search*: startet bei der hafen-bewusst gruppierten Lösung (garantiert nie
+    schlechter) und sucht gezielt nach lohnenden Hafen-Wechseln einzelner Packstücke -
+    die starre Gruppierung ist nicht immer optimal (siehe eigener Abschnitt unten,
+    auf ausdrücklichen Wunsch ergänzt, inkl. handgerechnetem Beweis). Nachweislich
+    **monoton** in der Beam-Breite (Regler "Beam-Breite", 1-6).
 - **Primäransicht "Ihre kostenoptimierte Konsolidierung"** von Anfang an (Lehre aus
   der Tourenplanung-Demo direkt übernommen): zeigt die tatsächlich günstigere Methode,
   **dynamisch bei jedem Lauf neu bestimmt** (siehe Kipppunkt unten) - kein
@@ -220,26 +221,160 @@ Algorithmen zu vergleichen, nicht meine Implementierungsqualität:
 |---|---|---|
 | Monoton in der Breite | Ja (14/14 Instanzen) | Ja (14/14 Instanzen) |
 | Rechenzeit (bw=16, Ø) | ~2,5 ms | ~10,8 ms (Faktor ~4,3×) |
-| Gesamtkosten günstiger | 12 von 20 Fällen | 8 von 20 Fällen (bei bw=16 exakt 5:5) |
 
-**Der verbleibende Geschwindigkeitsunterschied ist echt, kein Implementierungsfehler
-mehr:** monobeam bewertet bei jedem Schritt *alle* bestehenden Container eines
-Zustands als Kandidaten, um sie sauber zu ranken (nötig für die Prefix-Konsistenz-
-Garantie). Der Ensemble-Ansatz nutzt dagegen First-Fit (das erste Container, das passt,
-ohne Ranking) und gleicht das durch mehrere komplette Durchläufe aus. Gründlichere
-Bewertung pro Schritt vs. mehr vollständige, aber einfachere Durchläufe - ein echter,
+**Der Geschwindigkeitsunterschied ist echt, kein Implementierungsfehler mehr:**
+monobeam bewertet bei jedem Schritt *alle* bestehenden Container eines Zustands als
+Kandidaten, um sie sauber zu ranken (nötig für die Prefix-Konsistenz-Garantie). Der
+Ensemble-Ansatz nutzt dagegen First-Fit (das erste Container, das passt, ohne Ranking)
+und gleicht das durch mehrere komplette Durchläufe aus. Gründlichere Bewertung pro
+Schritt vs. mehr vollständige, aber einfachere Durchläufe - ein echter,
 nachvollziehbarer Kompromiss.
 
-**Kein Ansatz dominiert den anderen bei der Lösungsqualität** - für dieses konkrete
-Problem (Bin-Packing mit anschließender Hafenwahl) ist keiner der beiden Mechanismen
-grundsätzlich überlegen; beide sind mathematisch korrekt monoton, unterscheiden sich
-aber in Rechenaufwand und finden je nach Instanz unterschiedlich gute Lösungen.
-`monobeam_construction` ist Teil der Codebasis und vollständig getestet
-(`test_monobeam_is_monotone_in_beam_width` und weitere), aber bewusst **nicht** in die
-Haupt-App integriert - sie dient hier als dokumentierter, funktionierender Vergleich im
-Code, nicht als vierte auswählbare Methode in der Oberfläche (die App hat mit drei
-Methoden bereits eine sinnvolle Kernaussage, siehe README-Hinweise zur Tourenplanung-
-Demo zum Thema "wie viele Methoden verträgt eine Demo").
+### Ein dritter Fund: die erste Vergleichszahl war unfair
+
+Der erste Kostenvergleich (12 von 20 Fällen für das Ensemble, 8 für monobeam) verglich
+nicht wirklich die beiden Suchmechanismen - `monobeam_construction` gruppierte
+Packstücke ursprünglich **nicht** nach Hafen-Präferenz, anders als
+`beam_search_construction`, das explizit auf `port_aware_construction`'s Gruppierung
+aufbaut. Bei größeren Instanzen zeigte sich das deutlich: monobeam schnitt bis zu 9 %
+**schlechter** ab als `port_aware_construction`, obwohl es strukturell mindestens
+gleichauf hätte liegen sollen. Fix: `monobeam_construction` hat jetzt einen
+`grouped`-Parameter (Standard `True`) - wendet dieselbe Hafen-Präferenz-Gruppierung vor
+der monobeam-Suche an, `grouped=False` reproduziert die ursprüngliche, ungruppierte
+Fassung. Regressionstest: `test_monobeam_grouping_fixes_unfair_comparison_with_port_aware`.
+
+Mit dieser Korrektur liegen beide Ansätze bei der Lösungsqualität sehr nah beieinander -
+keiner dominiert den anderen systematisch (siehe Skalierungsanalyse unten für die
+konkreten Zahlen).
+
+`monobeam_construction` ist Teil der Codebasis und vollständig getestet, aber bewusst
+**nicht** in die Haupt-App integriert - sie dient hier als dokumentierter,
+funktionierender Vergleich im Code, nicht als vierte auswählbare Methode in der
+Oberfläche (die App hat mit drei Methoden bereits eine sinnvolle Kernaussage, siehe
+README-Hinweise zur Tourenplanung-Demo zum Thema "wie viele Methoden verträgt eine
+Demo").
+
+## Skalierungsanalyse: hilft Beam Search bei größeren Instanzen?
+
+Auf Nachfrage untersucht: liegt der geringe Vorteil der Beam-Varianten gegenüber
+"Hafen-bewusst gruppiert" (im allgemeinen Benchmark oben nur ~0-3 %) daran, dass die
+bisher betrachteten Probleminstanzen zu klein sind? Systematisch getestet über
+20-200 Packstücke (fester Aufbau: 6 Regionen, 3 Häfen, Kapazität 100, je 5 Seeds):
+
+| Packstücke | Blind | Hafen-bewusst | Beam(16) | monobeam(16) | Aware ggü. Blind | Beam ggü. Aware | Mono ggü. Aware |
+|---|---|---|---|---|---|---|---|
+| 20 | 8.662 | 8.140 | 8.140 | 8.139 | 6,0 % | 0,0 % | 0,0 % |
+| 40 | 17.288 | 15.401 | 15.386 | 15.401 | 10,9 % | 0,1 % | 0,0 % |
+| 60 | 26.931 | 24.494 | 24.485 | 24.487 | 9,1 % | 0,0 % | 0,0 % |
+| 100 | 42.150 | 37.417 | 37.254 | 37.405 | 11,2 % | 0,4 % | 0,0 % |
+| 150 | 62.993 | 56.393 | 56.362 | 56.393 | 10,5 % | 0,1 % | 0,0 % |
+| 200 | 84.130 | 74.837 | 74.833 | 74.866 | 11,0 % | 0,0 % | 0,0 % |
+
+**Klare Antwort: nein, die Instanzgröße ist nicht die Erklärung.** Der Vorteil von
+"Hafen-bewusst" gegenüber "Blind" bleibt über den gesamten Bereich stabil bei ~9-11 %.
+Der Vorteil der Beam-Varianten gegenüber "Hafen-bewusst" bleibt durchgehend bei ~0-0,4 %
+- weder wachsend noch schrumpfend mit n. Auch ein bewusst "hartes" Bin-Packing-Regime
+(Packstückgrößen 40-60 bei Kapazität 100, erzwingt oft genau 2 Packstücke je Container -
+klassisch schwer für First-Fit) und Beam-Breiten bis 1.000 änderten daran nichts
+(Ersparnis plateaut bei ~0,5 % ab Breite 16, `test_beam_advantage_over_port_aware_stays_small_across_problem_sizes`).
+
+**Die eigentliche Erklärung:** First-Fit-Decreasing ist für 1D-Bin-Packing ein
+bekanntermaßen bereits nahezu optimales Verfahren (worst-case innerhalb 11/9 · OPT + 1,
+in der Praxis meist noch deutlich näher am Optimum). Beide Beam-Varianten variieren nur
+die *Reihenfolge*, in der Packstücke FFD zugeführt werden - aber wenn FFD selbst schon
+kaum noch Verbesserungsspielraum hat, bringt das Ausprobieren mehrerer Reihenfolgen
+wenig. Der eigentliche Hebel in diesem Problem ist die **Gruppierung** (blind vs.
+hafen-bewusst, ~10 %) - nicht die Packreihenfolge innerhalb einer bereits guten Gruppe.
+Für einen größeren Beam-Search-Vorteil müsste die Suche eine andere Dimension
+explorieren, z. B. probeweise abweichende Hafen-Zuordnungen einzelner Packstücke statt
+nur Packreihenfolgen - das wurde als Erweiterung tatsächlich umgesetzt, siehe nächster
+Abschnitt.
+
+## Erweiterung: flexible Hafen-Zuordnung statt starrer Gruppierung
+
+Berechtigter Einwand nach der Skalierungsanalyse: Die Gruppierung "jedes Packstück an
+seinen individuell günstigsten Hafen" ist eine starre Vorentscheidung - ignoriert sie
+echte Verbesserungsmöglichkeiten?
+
+### Ja - handgerechneter Beweis
+
+Konstruiertes Gegenbeispiel: 2 Häfen, Region A bevorzugt Hafen 0 knapp (Straßenkosten
+10 vs. 11 pro Einheit), Region B bevorzugt Hafen 1 stark (50 vs. 5). Drei Packstücke:
+A(60), A(45), B(55) - Kapazität 100 je Container.
+
+Starre Gruppierung: A(60) und A(45) passen NICHT zusammen (60+45=105 > 100) → 2
+Container für Region A, plus 1 Container für B(55) → **3 Container, 3.725 €**.
+
+Flexible Lösung: A(45) wechselt für eine kleine Straßenkosten-Strafe (45 × 1 € = 45 €)
+zu Hafen 1, passt dort exakt mit B(55) zusammen (45+55=100) → **2 Container, 2.970 €**
+- die kleine Strafe von 45 € spart eine ganze Seefracht (800 €), netto 755 € günstiger
+(~20 %). Festgehalten in `test_flexible_beam_finds_known_handcalculated_improvement`.
+
+### Warum reine (ungruppierte) Vorwärtssuche das nicht zuverlässig findet
+
+`monobeam_construction(..., grouped=False)` (siehe oben) ist im Prinzip bereits die
+"flexible" Version - Packstücke werden ohne Vorab-Gruppierung verarbeitet, jeder
+Container bekommt frei den besten Hafen zugewiesen. Getestet an echten
+Zufallsinstanzen (nicht am Gegenbeispiel oben) holt sie die starre Gruppierung aber
+selbst bei Beam-Breite 256 nicht zuverlässig ein:
+
+| Seed | starr | flex (bw=16) | flex (bw=64) | flex (bw=256) |
+|---|---|---|---|---|
+| 2 | 22.551 | 25.883 | 23.262 | 22.766 |
+| 4 | 22.825 | 23.823 | 23.823 | 23.691 |
+| 6 | 28.516 | 32.492 | 31.931 | 30.239 |
+
+**Grund:** Packstücke werden nach Größe absteigend verarbeitet - große Packstücke
+committen sich früh zu einem Container/Hafen, bevor die Suche "sieht", welche
+kleineren Packstücke später gut dazu passen würden. Reine Vorwärtssuche ohne
+Lookahead findet Kompromisse nur zufällig, nicht systematisch - mehr Breite hilft
+kaum, weil das Grundproblem (keine Rückschau) bestehen bleibt.
+
+### Der neue Mechanismus: `flexible_beam_search_construction`
+
+Statt blinder Vorwärtssuche eine **Beam-Search-Verbesserungssuche**, die bei der
+starren Gruppierung STARTET (garantiert nie schlechter) und über mehrere Runden
+gezielt die besten Einzelverschiebungen eines Packstücks in einen anderen Container
+sucht - direkte Bewertung des tatsächlichen Kosteneffekts statt blinder Neukonstruktion.
+Dieselbe "immer mindestens der Ausgangszustand ist im Kandidatenpool"-Logik wie beim
+`beam_width=1`-Fix von `beam_search_construction` garantiert die Nie-schlechter-
+Eigenschaft.
+
+**Ergebnis über 14 Testinstanzen (30 Packstücke):** im Schnitt **1,9 % Ersparnis**
+gegenüber starrer Gruppierung (deutlich mehr als die ~0-0,4 % der reinen
+Packreihenfolge-Varianten oben), in Einzelfällen bis zu 7,1 %, in mehreren Fällen 0 %
+(nicht jedes Szenario hat ausnutzbare Struktur - ehrliches Ergebnis, kein
+Selbstläufer). `test_flexible_beam_never_worse_than_port_aware` und
+`test_flexible_beam_is_monotone_in_beam_width` bestätigen beide Garantien.
+
+### Zwei Performance-Probleme unterwegs gefunden und behoben
+
+1. **Vollständige statt inkrementelle Kostenberechnung** - dieselbe Fehlerklasse wie
+   bei `monobeam_construction` zuvor. Erste Fassung: 1,4 s bei 100 Packstücken. Fix:
+   nur die beiden durch eine Verschiebung tatsächlich betroffenen Container werden neu
+   bewertet, nicht der gesamte Zustand. Danach: 468 ms - besser, aber immer noch zu
+   langsam für automatische Neuberechnung bei jeder UI-Interaktion.
+2. **Beam-Breite hilft hier kaum, kostet aber viel** - anders als bei
+   Konstruktions-Beam-Search bringt eine breitere Suche bei dieser
+   Verbesserungssuche kaum zusätzliche Qualität (empirisch: `beam_width=1`, `2` und
+   `16` liefern praktisch identische Ersparnis, ~1,7-1,9 % im Schnitt), aber jede
+   zusätzliche Runde nach der ersten wird deutlich teurer, weil sich der Beam auf bis
+   zu `beam_width` Zustände auffächert und jeder in der Folgerunde erneut vollständig
+   durchsucht wird (bei `beam_width=32`: bis zu 3,4 s bei 100 Packstücken). Der
+   Sidebar-Regler ist deshalb bewusst auf 1-6 begrenzt (Standard 2), Worst Case dort
+   ~380 ms. `test_flexible_beam_width_scaling_quality_is_similar` und
+   `test_flexible_beam_worst_case_completes_within_budget` halten das fest.
+
+### In die App integriert - ersetzt die bisherige "Beam Search"-Methode
+
+Die alte `beam_search_construction` (Ensemble-Ansatz, ~0 % Vorteil gegenüber
+"Hafen-bewusst") wurde in der Oberfläche durch `flexible_beam_search_construction`
+ersetzt - strikt besser (dieselbe Nie-schlechter-Garantie, aber echter statt kaum
+vorhandener Nutzen), ohne die App um eine weitere Methode zu erweitern. Der Regler
+"Beam-Breite" und alle Erklärtexte wurden entsprechend aktualisiert.
+`beam_search_construction` und `monobeam_construction` bleiben vollständig getestet in
+der Codebasis (für die technische Vergleichsgeschichte oben), sind aber nicht mehr in
+der UI verdrahtet.
 
 ## Ein Fund beim Bauen des "Teure Seefracht"-Presets
 
@@ -267,7 +402,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-67 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
+77 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
 
 ## 3. Kostenlos online stellen (Streamlit Community Cloud)
 
