@@ -1,0 +1,573 @@
+"""
+Automatisierte Tests für die Seefracht-Konsolidierungs-Demo.
+
+Zwei Ebenen, wie bei den anderen Demos:
+1. UI-Tests über streamlit.testing.v1.AppTest.
+2. Unit-Tests der reinen Logik-Funktionen.
+
+Ausführen mit: pytest tests/ -v
+"""
+
+import os
+import sys
+
+import numpy as np
+import pytest
+from streamlit.testing.v1 import AppTest
+
+APP_DIR = os.path.join(os.path.dirname(__file__), "..")
+APP_PATH = os.path.join(APP_DIR, "app.py")
+TIMEOUT = 90
+
+sys.path.insert(0, os.path.abspath(APP_DIR))
+
+
+def fresh_app():
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=TIMEOUT)
+    return at
+
+
+def assert_ok(at):
+    assert not at.exception, f"Unerwartete Exception(s): {[e.message for e in at.exception]}"
+
+
+# ==========================================================================
+# 1. UI-Tests (AppTest)
+# ==========================================================================
+
+def test_default_load():
+    at = fresh_app()
+    assert_ok(at)
+
+
+def test_primary_view_shows_three_metrics():
+    at = fresh_app()
+    assert_ok(at)
+    labels = [m.label for m in at.metric[:3]]
+    assert labels == ["Gesamtkosten", "davon Seefracht", "Container genutzt"]
+
+
+def test_primary_view_method_attribution_in_caption():
+    at = fresh_app()
+    assert_ok(at)
+    captions = [str(c.value) for c in at.caption]
+    assert any("günstigeren von zwei eigenen Methoden" in c for c in captions)
+
+
+@pytest.mark.parametrize("label", ["Standard-Konsolidierung", "Teure Seefracht", "Starke regionale Streuung"])
+def test_presets_apply_without_crash(label):
+    at = fresh_app()
+    btn = [b for b in at.button if label in b.label][0]
+    btn.click().run(timeout=TIMEOUT)
+    assert_ok(at)
+
+
+def test_teure_seefracht_preset_reliably_flips_winner():
+    """Verifiziert, dass der 'Teure Seefracht'-Preset tatsächlich zeigt, was
+    sein Hilfetext verspricht: bei diesem Kostenverhältnis gewinnt 'Blind
+    gepackt', nicht 'Hafen-bewusst gruppiert'. Beim ersten Bauen zeigte ein
+    schlecht gewählter Preset-Seed das Gegenteil - dieser Test verhindert,
+    dass das unbemerkt zurückkommt (z. B. wenn jemand später die
+    Standard-Straßenkosten-Skalierung ändert)."""
+    at = fresh_app()
+    btn = [b for b in at.button if "Teure Seefracht" in b.label][0]
+    btn.click().run(timeout=TIMEOUT)
+    assert_ok(at)
+    comp_df = [d for d in at.dataframe if "Methode" in d.value.columns][0].value
+    costs = dict(zip(comp_df["Methode"], comp_df["Gesamtkosten"].str.replace(" €", "").astype(float)))
+    assert costs["Blind gepackt"] < costs["Hafen-bewusst gruppiert"], (
+        f"Erwartet: Blind gepackt günstiger, bekommen: {costs}"
+    )
+
+
+def test_regenerate_button():
+    at = fresh_app()
+    at.sidebar.button[0].click().run(timeout=TIMEOUT)
+    assert_ok(at)
+
+
+@pytest.mark.parametrize("slider_idx,value", [(0, 100), (0, 10), (1, 8), (1, 3), (2, 5), (2, 2)])
+def test_slider_extremes(slider_idx, value):
+    at = fresh_app()
+    at.sidebar.slider[slider_idx].set_value(value).run(timeout=TIMEOUT)
+    assert_ok(at)
+
+
+def test_worst_case_settings_no_crash():
+    at = fresh_app()
+    at.sidebar.slider[0].set_value(100).run(timeout=TIMEOUT)
+    at.sidebar.slider[1].set_value(8).run(timeout=TIMEOUT)
+    at.sidebar.slider[2].set_value(5).run(timeout=TIMEOUT)
+    assert_ok(at)
+
+
+def test_pdf_download_buttons_present():
+    at = fresh_app()
+    assert_ok(at)
+    labels = [d.label for d in at.download_button]
+    assert len(labels) == 4  # Primäransicht + Blind + Hafen-bewusst + Beam Search
+    assert all("PDF" in l for l in labels)
+
+
+def test_feedback_buttons_work():
+    at = fresh_app()
+    up = [b for b in at.button if b.key == "feedback_up_btn"][0]
+    up.click().run(timeout=TIMEOUT)
+    assert_ok(at)
+    assert any("Danke" in str(s.value) for s in at.success)
+
+
+def test_comparison_tab_has_all_three_methods():
+    at = fresh_app()
+    assert_ok(at)
+    comparison_dfs = [d for d in at.dataframe if "Methode" in d.value.columns]
+    assert comparison_dfs
+    methods = comparison_dfs[0].value["Methode"].tolist()
+    assert "Blind gepackt" in methods
+    assert "Hafen-bewusst gruppiert" in methods
+    assert "Beam Search" in methods
+
+
+def test_permalink_writes_and_restores():
+    at = fresh_app()
+    assert_ok(at)
+    qp = dict(at.query_params)
+    for key in ["n_items", "n_regions", "n_ports", "cap", "sea", "spread", "beam", "seed"]:
+        assert key in qp
+
+    at2 = AppTest.from_file(APP_PATH)
+    at2.query_params["n_items"] = "55"
+    at2.run(timeout=TIMEOUT)
+    assert_ok(at2)
+    assert at2.sidebar.slider[0].value == 55
+
+
+@pytest.mark.parametrize("param,value", [
+    ("n_items", "9999"), ("n_items", "-5"), ("n_ports", "9999"),
+    ("sea", "nan"), ("sea", "inf"), ("spread", "-inf"),
+    ("seed", "-42"), ("n_ports", "not_a_number"), ("cap", "9999"),
+    ("beam", "9999"), ("beam", "-5"), ("beam", "nan"),
+])
+def test_permalink_handles_bad_values_without_crash(param, value):
+    at = AppTest.from_file(APP_PATH)
+    at.query_params[param] = value
+    at.run(timeout=TIMEOUT)
+    assert_ok(at)
+
+
+def test_slider_bounds_match_setting_specs():
+    import freight_presets
+
+    at = fresh_app()
+    assert_ok(at)
+    by_key = {s.key: s for s in at.sidebar.slider if s.key}
+    checked = 0
+    for state_key, spec in freight_presets.SETTING_SPECS.items():
+        if spec.lo is None or state_key not in by_key:
+            continue
+        slider = by_key[state_key]
+        assert slider.min == pytest.approx(spec.lo)
+        assert slider.max == pytest.approx(spec.hi)
+        checked += 1
+    assert checked == 7, f"Nur {checked} von 7 erwarteten Slidern geprüft"
+
+
+def test_setting_specs_defaults_within_bounds():
+    import freight_presets
+
+    for state_key, spec in freight_presets.SETTING_SPECS.items():
+        if spec.lo is not None:
+            assert spec.lo <= spec.default <= spec.hi
+
+
+def test_permalink_url_params_are_unique():
+    import freight_presets
+
+    params = [spec.url_param for spec in freight_presets.SETTING_SPECS.values()]
+    assert len(params) == len(set(params))
+
+
+# ==========================================================================
+# 2. Unit-Tests der reinen Funktionen
+# ==========================================================================
+
+from freight_data import generate_freight_scenario
+from freight_evaluation import evaluate_assignment
+from freight_heuristics import beam_search_construction, blind_packing_construction, monobeam_construction, port_aware_construction
+
+
+def test_generate_freight_scenario_shapes():
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=1)
+    assert pc.shape == (3, 2)
+    assert rc.shape == (5, 2)
+    assert road_cost.shape == (5, 3)
+    assert sea_freight.shape == (3,)
+    assert len(item_sizes) == 30
+    assert len(item_regions) == 30
+    assert item_regions.min() >= 0 and item_regions.max() < 5
+
+
+def test_sea_freight_base_is_actually_used_not_ignored():
+    """Regressionstest für eine beim Bauen gefundene Falle: eine frühere
+    Version las die Seefrachtbasis aus einer Modulkonstante statt als
+    Parameter - der Sidebar-Regler hätte dadurch keine Wirkung gehabt."""
+    _, _, _, sea_low, _, _ = generate_freight_scenario(10, 3, 2, seed=1, sea_freight_base=500.0, sea_freight_spread=0.0)
+    _, _, _, sea_high, _, _ = generate_freight_scenario(10, 3, 2, seed=1, sea_freight_base=3000.0, sea_freight_spread=0.0)
+    assert sea_high.mean() > sea_low.mean() * 3
+
+
+# --- Kostenberechnung: handgerechnete Fälle mit bekanntem Ergebnis ---
+
+def test_heuristics_handcalculated_example_from_discussion():
+    """Kernkorrektheitstest, direkt aus dem in der Konversation besprochenen
+    Zahlenbeispiel: zwei Packstücke mit Präferenz Hafen 0, eines mit
+    Präferenz Hafen 1. Blind gepackt zwingt zum Kompromiss, hafen-bewusst
+    gruppiert nicht."""
+    road_cost = np.array([
+        [50.0, 200.0],   # Region 0
+        [180.0, 40.0],   # Region 1
+    ])
+    sea_freight = np.array([0.0, 0.0])  # isoliert nur die Straßenkosten-Wirkung
+    item_sizes = np.array([1.0, 1.0, 1.0])
+    item_regions = np.array([0, 0, 1])
+    capacity = 100.0
+
+    blind = blind_packing_construction(item_sizes, item_regions, capacity, road_cost, sea_freight)
+    assert len(blind) == 1
+    assert blind[0]["port"] == 0
+    assert blind[0]["cost"] == 280.0  # 50+50+180 (Kompromiss für Region-1-Packstück)
+
+    aware = port_aware_construction(item_sizes, item_regions, capacity, road_cost, sea_freight)
+    total_aware = sum(c["cost"] for c in aware)
+    assert total_aware == 140.0  # (50+50) + 40, kein Kompromiss mehr
+    assert total_aware < 280.0
+
+
+def test_evaluate_assignment_splits_sea_and_road_cost_correctly():
+    road_cost = np.array([[50.0, 200.0], [180.0, 40.0]])
+    sea_freight = np.array([100.0, 150.0])
+    item_sizes = np.array([1.0, 1.0, 1.0])
+    item_regions = np.array([0, 0, 1])
+
+    aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+    result = evaluate_assignment(aware, item_sizes, item_regions, road_cost, sea_freight)
+    assert result["n_containers"] == 2
+    assert result["sea_cost_total"] == 250.0
+    assert result["road_cost_total"] == 140.0
+    assert result["total_cost"] == 390.0
+
+
+# --- Strukturelle Korrektheit ---
+
+def _validate_assignment(assignments, item_sizes, capacity, n_items):
+    all_idxs = []
+    for c in assignments:
+        total_size = sum(item_sizes[i] for i in c["items"])
+        assert total_size <= capacity + 1e-6, f"Container überladen: {total_size} > {capacity}"
+        all_idxs.extend(c["items"])
+    assert sorted(all_idxs) == list(range(n_items)), "Nicht alle Packstücke abgedeckt oder Duplikate"
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("heuristic", [blind_packing_construction, port_aware_construction])
+def test_heuristics_produce_structurally_valid_assignments(heuristic, seed):
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+    assignments = heuristic(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+    _validate_assignment(assignments, item_sizes, 100.0, 30)
+
+
+def test_heuristics_handle_zero_items():
+    road_cost = np.zeros((3, 2))
+    sea_freight = np.zeros(2)
+    item_sizes = np.array([])
+    item_regions = np.array([], dtype=int)
+    for heuristic in [blind_packing_construction, port_aware_construction]:
+        assignments = heuristic(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        assert assignments == []
+
+
+def test_single_oversized_item_gets_own_container_not_dropped():
+    """Ein Packstück größer als die Kapazität darf nicht verschwinden - es
+    landet in einem eigenen (dann überladenen) Container statt eine
+    Exception zu werfen oder stillschweigend zu verschwinden."""
+    road_cost = np.zeros((2, 2))
+    sea_freight = np.zeros(2)
+    item_sizes = np.array([500.0])  # weit über Kapazität
+    item_regions = np.array([0])
+    assignments = blind_packing_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+    assert len(assignments) == 1
+    assert assignments[0]["items"] == [0]
+
+
+# --- Kipppunkt: der zentrale, empirisch verifizierte Befund dieser Demo ---
+
+def test_port_aware_wins_at_default_sea_freight():
+    """Bei der Standard-Seefracht sollte hafen-bewusste Gruppierung über
+    mehrere Instanzen hinweg zuverlässig günstiger sein."""
+    wins_aware = 0
+    for seed in range(1, 9):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(
+            30, 5, 3, seed=seed, sea_freight_base=800.0, sea_freight_spread=0.3
+        )
+        blind = blind_packing_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        cb, ca = sum(c["cost"] for c in blind), sum(c["cost"] for c in aware)
+        if ca < cb:
+            wins_aware += 1
+    assert wins_aware >= 7  # mind. 7 von 8 (empirisch: 8/8 im ursprünglichen Test)
+
+
+def test_blind_wins_at_high_sea_freight_tipping_point():
+    """Der zentrale, empirisch gefundene Kipppunkt: bei ausreichend hoher
+    Seefracht relativ zu den Straßenkosten kehrt sich der Vorteil um, weil
+    hafen-bewusste Gruppierung tendenziell mehr Container braucht."""
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(
+        40, 6, 3, seed=6, sea_freight_base=3000.0, sea_freight_spread=0.3
+    )
+    blind = blind_packing_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+    aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+    cb, ca = sum(c["cost"] for c in blind), sum(c["cost"] for c in aware)
+    assert cb < ca, f"Erwarteter Kipppunkt nicht eingetreten: blind={cb}, aware={ca}"
+
+
+def test_port_aware_uses_at_least_as_many_containers():
+    """Bestätigt den Mechanismus hinter dem Kipppunkt: hafen-bewusste
+    Gruppierung zerteilt den Packstück-Pool vor dem Packen und braucht
+    deshalb tendenziell mindestens so viele Container wie blindes Packen."""
+    counts = []
+    for seed in range(1, 6):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        blind = blind_packing_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        counts.append((len(blind), len(aware)))
+    assert all(n_aware >= n_blind for n_blind, n_aware in counts), counts
+
+
+# --- PDF-Export ---
+
+def test_generate_consolidation_plan_pdf_produces_valid_pdf():
+    from freight_pdf_export import generate_consolidation_plan_pdf
+
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(20, 4, 3, seed=2)
+    aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+    pdf_bytes = generate_consolidation_plan_pdf("Test", aware, item_sizes, item_regions, road_cost, sea_freight)
+    assert pdf_bytes[:4] == b"%PDF"
+    assert len(pdf_bytes) > 500
+
+
+# --- Feedback ---
+
+def test_feedback_log_and_count_roundtrip(tmp_path):
+    from freight_feedback import get_feedback_counts, log_feedback
+
+    log_file = str(tmp_path / "feedback_test.csv")
+    assert get_feedback_counts(log_file) == (0, 0)
+    assert log_feedback("up", log_file) is True
+    assert log_feedback("down", log_file) is True
+    assert log_feedback("up", log_file) is True
+    assert get_feedback_counts(log_file) == (2, 1)
+
+
+# --- Beam Search: Monotonie (Kernanforderung dieser Ergänzung) ---
+
+def test_beam_search_is_monotone_in_beam_width():
+    """Der zentrale, ausdrücklich angeforderte Beweis: eine größere
+    Beam-Breite darf die Gesamtkosten NIE erhöhen, über viele Instanzen und
+    Breiten hinweg. Eine erste, klassischere Implementierung (schrittweises
+    Kandidaten-Pruning) verletzte das nachweislich (siehe README) - dieser
+    Test hätte das damals aufgedeckt und verhindert jetzt ein Regressieren
+    auf diese Klasse von Fehlern."""
+    for seed in range(1, 15):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        costs = []
+        for bw in [1, 2, 4, 8, 16, 32]:
+            assignments = beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=bw)
+            costs.append(sum(c["cost"] for c in assignments))
+        for i in range(len(costs) - 1):
+            assert costs[i] >= costs[i + 1] - 1e-6, (
+                f"seed={seed}: Kosten stiegen von bw={[1,2,4,8,16,32][i]} zu "
+                f"bw={[1,2,4,8,16,32][i+1]}: {costs[i]:.1f} -> {costs[i+1]:.1f}"
+            )
+
+
+def test_naive_stepwise_beam_search_would_have_violated_monotonicity():
+    """Dokumentiert das konkrete Gegenbeispiel, das die ursprüngliche
+    (verworfene) schrittweise Beam-Search-Implementierung als NICHT monoton
+    entlarvt hat - Seed 7, Schritt 6: bw=8 fand einen Zustand, der bei
+    bw=16 aus den Top-16 verdrängt wurde, weil der größere Elternzustands-
+    Pool bei bw=16 mehr NEUE, bessere Kandidaten hinzubrachte, als der
+    schmalere Pool Plätze hatte. Als Regressionstest gegen die alte,
+    fehlerhafte Idee festgehalten, nicht gegen die aktuelle Implementierung
+    (die dieses Muster nicht mehr verwendet)."""
+    from freight_heuristics import _best_port_for_container
+
+    def _state_score(containers, item_regions, item_sizes, road_cost, sea_freight):
+        return sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in containers)
+
+    def _state_key(containers):
+        return tuple(sorted(tuple(sorted(c)) for c in containers))
+
+    def naive_stepwise_beam(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width):
+        n = len(item_sizes)
+        order = sorted(range(n), key=lambda i: -item_sizes[i])
+        beam = [{"containers": []}]
+        for idx in order:
+            all_candidates = []
+            for state in beam:
+                containers = state["containers"]
+                for k, c in enumerate(containers):
+                    used = sum(item_sizes[i] for i in c)
+                    if used + item_sizes[idx] <= capacity + 1e-9:
+                        new_containers = [list(existing) for existing in containers]
+                        new_containers[k] = new_containers[k] + [idx]
+                        all_candidates.append(new_containers)
+                new_containers = [list(existing) for existing in containers] + [[idx]]
+                all_candidates.append(new_containers)
+            scored = []
+            seen = set()
+            for containers in all_candidates:
+                key = _state_key(containers)
+                if key in seen:
+                    continue
+                seen.add(key)
+                score = _state_score(containers, item_regions, item_sizes, road_cost, sea_freight)
+                scored.append((score, key, containers))
+            scored.sort(key=lambda t: (t[0], t[1]))
+            beam = [{"containers": containers} for _s, _k, containers in scored[:beam_width]]
+        best = min(beam, key=lambda s: _state_score(s["containers"], item_regions, item_sizes, road_cost, sea_freight))
+        return _state_score(best["containers"], item_regions, item_sizes, road_cost, sea_freight)
+
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=7)
+    cost_8 = naive_stepwise_beam(item_sizes, item_regions, 100.0, road_cost, sea_freight, 8)
+    cost_16 = naive_stepwise_beam(item_sizes, item_regions, 100.0, road_cost, sea_freight, 16)
+    assert cost_16 > cost_8, (
+        "Erwartete Monotonie-Verletzung der naiven Implementierung trat nicht auf - "
+        "Testdaten oder -Logik haben sich möglicherweise geändert."
+    )
+
+
+def test_beam_search_width_one_exactly_matches_port_aware():
+    """Regressionstest für einen zweiten, kleineren beim Testen gefundenen
+    Fehler: die erste Fassung von Beam Search verwendete IMMER eine gestörte
+    Sortierreihenfolge, auch bei beam_width=1 - dadurch war es NICHT
+    garantiert mindestens so gut wie 'Hafen-bewusst gruppiert' (ein Fall mit
+    einer winzigen, aber echten Verschlechterung wurde gefunden: 10315 statt
+    10314). Fix: Variante 0 ist jetzt bewusst ungestört und damit identisch
+    zu port_aware_construction - beam_width=1 muss deshalb exakt dieselben
+    Kosten liefern, nicht nur ähnliche."""
+    for seed in range(1, 15):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        beam1 = beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=1)
+        cost_aware = sum(c["cost"] for c in aware)
+        cost_beam1 = sum(c["cost"] for c in beam1)
+        assert abs(cost_aware - cost_beam1) < 1e-6, f"seed={seed}: aware={cost_aware:.2f} != beam(bw=1)={cost_beam1:.2f}"
+
+
+def test_beam_search_never_worse_than_port_aware():
+    """Beam Search nutzt dieselbe Gruppierung wie 'Hafen-bewusst gruppiert'
+    als Ausgangspunkt und probiert zusätzlich mehrere Packvarianten je
+    Gruppe durch - kann dadurch per Konstruktion nie schlechter sein."""
+    for seed in range(1, 8):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
+        beam = beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=8)
+        cost_aware = sum(c["cost"] for c in aware)
+        cost_beam = sum(c["cost"] for c in beam)
+        assert cost_beam <= cost_aware + 1e-6, f"seed={seed}: Beam Search ({cost_beam:.0f}) schlechter als Hafen-bewusst ({cost_aware:.0f})"
+
+
+def test_beam_search_structurally_valid():
+    for seed in range(1, 6):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        assignments = beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=8)
+        _validate_assignment(assignments, item_sizes, 100.0, 30)
+
+
+def test_beam_search_handles_zero_items():
+    road_cost = np.zeros((3, 2))
+    sea_freight = np.zeros(2)
+    assignments = beam_search_construction(np.array([]), np.array([], dtype=int), 100.0, road_cost, sea_freight, beam_width=4)
+    assert assignments == []
+
+
+def test_beam_search_worst_case_completes_within_budget():
+    """Performance-Schutztest: Beam Search wird bei jeder UI-Interaktion neu
+    berechnet (nicht Button-gesteuert), Worst Case muss schnell bleiben."""
+    import time
+
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(100, 8, 5, seed=1)
+    t0 = time.time()
+    beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=32)
+    elapsed = time.time() - t0
+    assert elapsed < 5.0, f"Beam Search Worst Case dauerte {elapsed:.1f}s"
+
+
+# --- monobeam: Adaption des Papers "Beam Search: Faster and Monotonic" ---
+# (Lemons, Linares López, Holte & Ruml, ICAPS 2022) - zum Vergleich mit dem
+# eigenen Ensemble-Ansatz implementiert. Anderer Mechanismus (sequenzielle,
+# geordnete Slot-Füllung mit gemeinsamem Kandidatenpool statt K unabhängiger
+# Konstruktionen), aber ebenfalls beweisbar monoton.
+
+def test_monobeam_is_monotone_in_beam_width():
+    """Derselbe Beweis wie für beam_search_construction, jetzt für die
+    monobeam-Adaption: die im Paper bewiesene Monotonie muss auch in
+    unserer Anpassung an das Konsolidierungsproblem gelten."""
+    for seed in range(1, 15):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        costs = []
+        for bw in [1, 2, 4, 8, 16, 32]:
+            assignments = monobeam_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=bw)
+            costs.append(sum(c["cost"] for c in assignments))
+        for i in range(len(costs) - 1):
+            assert costs[i] >= costs[i + 1] - 1e-6, (
+                f"seed={seed}: Kosten stiegen von bw={[1,2,4,8,16,32][i]} zu "
+                f"bw={[1,2,4,8,16,32][i+1]}: {costs[i]:.1f} -> {costs[i+1]:.1f}"
+            )
+
+
+def test_monobeam_structurally_valid():
+    for seed in range(1, 6):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        for bw in [1, 4, 16]:
+            assignments = monobeam_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=bw)
+            _validate_assignment(assignments, item_sizes, 100.0, 30)
+
+
+def test_monobeam_handles_zero_items():
+    road_cost = np.zeros((3, 2))
+    sea_freight = np.zeros(2)
+    assignments = monobeam_construction(np.array([]), np.array([], dtype=int), 100.0, road_cost, sea_freight, beam_width=4)
+    assert assignments == []
+
+
+def test_monobeam_worst_case_completes_within_budget():
+    import time
+
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(100, 8, 5, seed=1)
+    t0 = time.time()
+    monobeam_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=32)
+    elapsed = time.time() - t0
+    assert elapsed < 5.0, f"monobeam Worst Case dauerte {elapsed:.1f}s"
+
+
+def test_ensemble_vs_monobeam_comparison_produces_valid_reproducible_numbers():
+    """Kein Korrektheits-, sondern ein Dokumentationstest: hält die im
+    README berichteten Vergleichszahlen (beide Ansätze liefern brauchbare,
+    aber unterschiedliche Ergebnisse, keiner dominiert den anderen
+    durchgehend) als reproduzierbaren Beleg fest, nicht nur als Text."""
+    ensemble_better, monobeam_better = 0, 0
+    for seed in range(1, 11):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=seed)
+        ens = beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=16)
+        mono = monobeam_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=16)
+        c_ens, c_mono = sum(c["cost"] for c in ens), sum(c["cost"] for c in mono)
+        if c_ens < c_mono - 1:
+            ensemble_better += 1
+        elif c_mono < c_ens - 1:
+            monobeam_better += 1
+    # Beide sollten in der Praxis gewinnen koennen - keiner dominiert
+    # durchgehend (empirisch: exakt 5/10 vs 5/10 bei bw=16 im Test)
+    assert ensemble_better > 0, "Ensemble-Ansatz gewinnt in keinem Testfall - unerwartet"
+    assert monobeam_better > 0, "monobeam gewinnt in keinem Testfall - unerwartet"
