@@ -6,11 +6,13 @@ Vierte Demo im Portfolio. Entscheidung: welche Packstücke teilen sich einen
 Container, und über welchen Hafen wird jeder Container verschifft, um See-
 und Straßenfrachtkosten gemeinsam zu minimieren.
 
-WICHTIG: Welche der beiden Methoden die "bessere" ist, wird bei jedem Lauf
-NEU berechnet, nicht angenommen - je nach Verhältnis von Seefracht zu
+WICHTIG: Welche der drei Methoden die "bessere" ist, wird bei jedem Lauf NEU
+berechnet, nicht angenommen - je nach Verhältnis von Seefracht zu
 Straßenkosten kann die hafen-bewusste Gruppierung (mehr, aber gezieltere
-Container) oder die blinde Packung (weniger Container) günstiger sein. Siehe
-README für den empirisch gefundenen Kipppunkt.
+Container) oder die blinde Packung (weniger Container) günstiger sein, und
+Beam Search kann durch gezielte Hafen-Wechsel zusätzlich Wert freilegen.
+Siehe README für den empirisch gefundenen Kipppunkt sowie ein
+handgerechnetes Beispiel, wann Beam Search hilft.
 
 Lauffähig mit: streamlit run app.py
 """
@@ -35,11 +37,12 @@ st.markdown(
     """
 Interaktive Demo zur Konsolidierung von Sammelgut-Sendungen (LCL - Less than Container
 Load): Welche Packstücke teilen sich einen Container, und über welchen Hafen wird jeder
-Container verschifft, um See- und Straßenfrachtkosten **gemeinsam** zu minimieren? Zwei
+Container verschifft, um See- und Straßenfrachtkosten **gemeinsam** zu minimieren? Drei
 selbst implementierte Ansätze - **blind gepackt** (nach Größe, ohne Rücksicht auf
-Zielregion) und **hafen-bewusst gruppiert** (Packstücke mit ähnlicher Hafen-Präferenz
-werden gezielt zusammen verladen) - nutzen denselben Packmechanismus und unterscheiden
-sich nur in der Gruppierung davor.
+Zielregion), **hafen-bewusst gruppiert** (Packstücke mit ähnlicher Hafen-Präferenz
+werden gezielt zusammen verladen) und **Beam Search** (sucht zusätzlich gezielt nach
+lohnenden Hafen-Wechseln, wenn die starre Gruppierung selbst nicht optimal ist) -
+werden direkt verglichen.
 """
 )
 
@@ -47,21 +50,21 @@ st.caption("🎯 Schnellstart – ein Beispielszenario laden:")
 preset_col1, preset_col2, preset_col3 = st.columns(3)
 with preset_col1:
     st.button(
-        "📦 Standard-Konsolidierung", use_container_width=True,
-        on_click=apply_preset, args=(40, 6, 3, 100.0, 800.0, 0.3, 5),
-        help="Übliches Kostenverhältnis - hafen-bewusste Gruppierung sollte hier klar vorne liegen.",
+        "🎯 Beam Search lohnt sich", use_container_width=True,
+        on_click=apply_preset, args=(30, 8, 4, 100.0, 800.0, 0.1, 17),
+        help="Viele Regionen bei wenigen Häfen und knappen Kostenunterschieden - Beam Search findet hier gezielte Hafen-Wechsel, die 14% gegenüber reiner Gruppierung sparen.",
     )
 with preset_col2:
     st.button(
         "⚓ Teure Seefracht", use_container_width=True,
-        on_click=apply_preset, args=(40, 6, 3, 100.0, 3000.0, 0.3, 6),
+        on_click=apply_preset, args=(30, 5, 3, 100.0, 4000.0, 0.3, 4),
         help="Seefracht dominiert die Kosten - hier ist blindes Packen (weniger, volle Container) tatsächlich günstiger.",
     )
 with preset_col3:
     st.button(
         "🗺️ Starke regionale Streuung", use_container_width=True,
-        on_click=apply_preset, args=(50, 8, 4, 100.0, 800.0, 0.15, 9),
-        help="Viele Regionen mit klar unterschiedlicher Hafen-Präferenz - der Vorteil hafen-bewusster Gruppierung sollte hier besonders deutlich sein.",
+        on_click=apply_preset, args=(80, 8, 5, 100.0, 800.0, 0.3, 1),
+        help="Viele Regionen und Häfen bei vielen Packstücken - der Vorteil hafen-bewusster Gruppierung fällt hier deutlich stärker aus als im Normalfall (+26% statt der üblichen ~10%).",
     )
 
 st.caption("🔗 Die Adresszeile oben spiegelt Ihre aktuelle Konfiguration wider – einfach kopieren, um ein Szenario zu teilen.")
@@ -180,7 +183,7 @@ st.download_button(
     file_name="konsolidierungsplan_optimiert.pdf", mime="application/pdf", key="primary_pdf_download",
 )
 
-st.caption("Ermittelt mit der bei diesem Kostenverhältnis günstigeren von zwei eigenen Methoden. Details unten.")
+st.caption("Ermittelt mit der bei diesem Kostenverhältnis günstigsten von drei eigenen Methoden. Details unten.")
 
 st.markdown("---")
 
@@ -217,10 +220,11 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
             })
         st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
         st.caption(
-            "Alle drei Methoden nutzen denselben Packmechanismus (First-Fit-Decreasing) und dieselbe "
-            "Hafenwahl-Logik je Container - der Unterschied liegt in der Gruppierung vor dem Packen "
-            "(Blind: keine, Hafen-bewusst/Beam Search: nach günstigstem Hafen) und darin, ob mehrere "
-            "Packvarianten durchprobiert werden (nur Beam Search)."
+            "Blind und Hafen-bewusst nutzen denselben Packmechanismus (First-Fit-Decreasing) und "
+            "dieselbe Hafenwahl-Logik je Container - der Unterschied liegt allein in der Gruppierung "
+            "vor dem Packen. Beam Search startet bei der Hafen-bewusst gruppierten Lösung und sucht "
+            "zusätzlich gezielt nach lohnenden Hafen-Wechseln einzelner Packstücke (siehe README für "
+            "ein konkretes Beispiel, wann sich das lohnt)."
         )
 
 with st.expander("Wie funktioniert diese Demo?"):

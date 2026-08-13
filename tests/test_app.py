@@ -41,6 +41,22 @@ def test_default_load():
     assert_ok(at)
 
 
+def test_intro_text_mentions_all_three_methods_by_name():
+    """Regressionstest für gefundene stille Textreste: die Einleitung
+    sprach nach dem Einbau von Beam Search noch von 'Zwei selbst
+    implementierten Ansätzen'. Prüft positiv, dass alle drei Methodennamen
+    vorkommen, statt nur auf Abwesenheit eines veralteten Wortes zu testen -
+    robuster gegenüber zukünftigen Umformulierungen (gleiches Muster wie in
+    der Liniennetz-Design-Demo bewährt)."""
+    at = fresh_app()
+    assert_ok(at)
+    intro_texts = [str(m.value) for m in at.markdown if "Sammelgut-Sendungen" in str(m.value)]
+    assert intro_texts, "Einleitungstext nicht gefunden"
+    intro = intro_texts[0]
+    for name in ["blind gepackt", "hafen-bewusst gruppiert", "Beam Search"]:
+        assert name in intro, f"Einleitung erwähnt '{name}' nicht - Methodenzahl/-liste könnte veraltet sein"
+
+
 def test_primary_view_shows_three_metrics():
     at = fresh_app()
     assert_ok(at)
@@ -52,10 +68,10 @@ def test_primary_view_method_attribution_in_caption():
     at = fresh_app()
     assert_ok(at)
     captions = [str(c.value) for c in at.caption]
-    assert any("günstigeren von zwei eigenen Methoden" in c for c in captions)
+    assert any("günstigsten von drei eigenen Methoden" in c for c in captions)
 
 
-@pytest.mark.parametrize("label", ["Standard-Konsolidierung", "Teure Seefracht", "Starke regionale Streuung"])
+@pytest.mark.parametrize("label", ["Beam Search lohnt sich", "Teure Seefracht", "Starke regionale Streuung"])
 def test_presets_apply_without_crash(label):
     at = fresh_app()
     btn = [b for b in at.button if label in b.label][0]
@@ -63,13 +79,35 @@ def test_presets_apply_without_crash(label):
     assert_ok(at)
 
 
+def test_beam_search_lohnt_sich_preset_shows_meaningful_advantage():
+    """Regressionstest für einen gefundenen Fehler: nach dem Einbau von
+    flexible_beam_search_construction zeigte KEINER der drei bestehenden
+    Presets auch nur einen Cent Beam-Search-Vorteil - der bemerkenswerte
+    Fund aus der Diskussion (starre Gruppierung lässt Geld liegen) war in
+    der App selbst nirgends sichtbar. Der Preset 'Beam Search lohnt sich'
+    (30 Packstücke, 8 Regionen, 4 Häfen, geringe Seefracht-Streuung, Seed 17
+    - systematisch über ~200 Konfigurationen gesucht) zeigt jetzt einen
+    deutlichen, reproduzierbaren Vorteil (~14 % gegenüber Hafen-bewusst)."""
+    at = fresh_app()
+    btn = [b for b in at.button if "Beam Search lohnt sich" in b.label][0]
+    btn.click().run(timeout=TIMEOUT)
+    assert_ok(at)
+    comp_df = [d for d in at.dataframe if "Methode" in d.value.columns][0].value
+    costs = dict(zip(comp_df["Methode"], comp_df["Gesamtkosten"].str.replace(" €", "").astype(float)))
+    beam_advantage_pct = (costs["Hafen-bewusst gruppiert"] - costs["Beam Search"]) / costs["Hafen-bewusst gruppiert"] * 100
+    assert beam_advantage_pct > 5.0, f"Erwarteter deutlicher Beam-Search-Vorteil fehlt: nur {beam_advantage_pct:.1f}%"
+
+
 def test_teure_seefracht_preset_reliably_flips_winner():
     """Verifiziert, dass der 'Teure Seefracht'-Preset tatsächlich zeigt, was
     sein Hilfetext verspricht: bei diesem Kostenverhältnis gewinnt 'Blind
-    gepackt', nicht 'Hafen-bewusst gruppiert'. Beim ersten Bauen zeigte ein
-    schlecht gewählter Preset-Seed das Gegenteil - dieser Test verhindert,
-    dass das unbemerkt zurückkommt (z. B. wenn jemand später die
-    Standard-Straßenkosten-Skalierung ändert)."""
+    gepackt', nicht 'Hafen-bewusst gruppiert'. Regressionstest mit zwei
+    Funden dahinter: (1) ein ursprünglich schlecht gewählter Preset-Seed
+    zeigte das Gegenteil, (2) ein zweiter, robusterer Seed (n=40,r=6,p=3)
+    erwies sich bei genauerer Prüfung als reiner Zufallstreffer - nur 4 von
+    10 Seeds zeigten bei diesen Parametern überhaupt 'Blind gewinnt'. Die
+    jetzige Konfiguration (n=30,r=5,p=3,sea=4000 - Reglermaximum) zeigt den
+    Effekt in 9 von 10 Seeds robust."""
     at = fresh_app()
     btn = [b for b in at.button if "Teure Seefracht" in b.label][0]
     btn.click().run(timeout=TIMEOUT)
@@ -79,6 +117,27 @@ def test_teure_seefracht_preset_reliably_flips_winner():
     assert costs["Blind gepackt"] < costs["Hafen-bewusst gruppiert"], (
         f"Erwartet: Blind gepackt günstiger, bekommen: {costs}"
     )
+
+
+def test_starke_regionale_streuung_preset_shows_amplified_advantage():
+    """Regressionstest für einen gefundenen Fehler: der ursprüngliche Preset
+    versprach einen 'besonders deutlichen' Vorteil hafen-bewusster
+    Gruppierung, lieferte aber im Schnitt (~11%) praktisch denselben Effekt
+    wie ein gewöhnliches Szenario ohne besondere Zuschneidung (~11%) - der
+    gewählte Hebel (Seefracht-Streuung) beeinflusst gar nicht die
+    Straßenkosten, auf denen der Gruppierungsvorteil eigentlich beruht.
+    Systematisch nach dem tatsächlich wirksamen Hebel gesucht (mehr Häfen +
+    mehr Packstücke verstärken den Effekt); die jetzige Konfiguration
+    (n=80,r=8,p=5) zeigt einen deutlich stärkeren, robusten Vorteil (~26%
+    bei diesem Seed, Ø ~16-17% über mehrere Seeds)."""
+    at = fresh_app()
+    btn = [b for b in at.button if "Starke regionale Streuung" in b.label][0]
+    btn.click().run(timeout=TIMEOUT)
+    assert_ok(at)
+    comp_df = [d for d in at.dataframe if "Methode" in d.value.columns][0].value
+    costs = dict(zip(comp_df["Methode"], comp_df["Gesamtkosten"].str.replace(" €", "").astype(float)))
+    advantage_pct = (costs["Blind gepackt"] - costs["Hafen-bewusst gruppiert"]) / costs["Blind gepackt"] * 100
+    assert advantage_pct > 20.0, f"Erwarteter deutlich verstärkter Vorteil fehlt: nur {advantage_pct:.1f}%"
 
 
 def test_regenerate_button():

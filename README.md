@@ -88,7 +88,7 @@ ist (`best = min(candidates, key=lambda c: c["total_cost"])`) - keine Methode wi
 fest als "die bessere" angenommen, das wäre bei hoher Seefracht schlicht falsch.
 
 **Praktische Konsequenz für die Demo:** Der Regler "Seefracht je Container" macht
-diesen Kipppunkt direkt erfahrbar - beide Methoden werden bei jeder Einstellung neu
+diesen Kipppunkt direkt erfahrbar - alle Methoden werden bei jeder Einstellung neu
 gerechnet, sichtbar in Primäransicht und Vergleichstabelle.
 
 ## Beam Search: monoton in der Beam-Breite (auf Wunsch ergänzt)
@@ -376,14 +376,50 @@ vorhandener Nutzen), ohne die App um eine weitere Methode zu erweitern. Der Regl
 der Codebasis (für die technische Vergleichsgeschichte oben), sind aber nicht mehr in
 der UI verdrahtet.
 
-## Ein Fund beim Bauen des "Teure Seefracht"-Presets
+## Presets: zwei weitere Funde bei einer gezielten Nachprüfung
 
-Der erste Entwurf des Presets (Seefracht 2.800 €, Seed 5) sollte den Kipppunkt zeigen,
-tat es aber nicht zuverlässig - bei diesem konkreten Seed gewann trotzdem die
-hafen-bewusste Methode, obwohl der Hilfetext das Gegenteil versprach. Systematisch nach
-einer robusteren Kombination gesucht (verschiedene Seefracht-Stufen × 10 Seeds) und auf
-Seefracht 3.000 €, Seed 6 korrigiert (klarer Vorsprung für "Blind gepackt", 2.517 €
-Differenz). Regressionstest: `test_teure_seefracht_preset_reliably_flips_winner`.
+Nach dem Einbau von Beam Search fiel bei einer Nachfrage auf, dass die verbliebenen
+zwei Presets ("Teure Seefracht", "Starke regionale Streuung") zwar nicht abstürzten,
+aber nicht mehr robust genug das zeigten, was ihr Name versprach - beide wurden
+systematisch neu überprüft und korrigiert.
+
+**"Teure Seefracht" - zweiter Anlauf.** Der erste Fund (siehe Commit-Historie: Seefracht
+2.800 €, Seed 5 zeigte fälschlich "Hafen-bewusst gewinnt") wurde bereits einmal auf
+Seefracht 3.000 €, Seed 6 korrigiert. Bei genauerer Prüfung (10 Seeds bei denselben
+Parametern) stellte sich aber heraus: auch diese zweite Wahl war eher ein
+Zufallstreffer als ein robuster Effekt - bei n=40, r=6, p=3 gewann "Blind gepackt" nur
+in 4 von 10 Seeds überhaupt, selbst bei Seefracht 5.000 € (weit über dem
+Reglermaximum) nur in 5 von 10. Bei der kleineren Konfiguration n=30, r=5, p=3 (wie im
+ursprünglichen Kipppunkt-Benchmark) zeigte sich der Effekt dagegen robust: bei
+Seefracht 4.000 € (Reglermaximum) gewinnt "Blind gepackt" in 9 von 10 Seeds, im
+Schnitt 10 Prozentpunkte Vorsprung. Preset korrigiert auf diese Konfiguration, Seed 4
+(10,4 % Vorsprung, Beam Search findet hier korrekterweise keine zusätzliche
+Verbesserung - eine saubere Einzellektion statt vermischter Botschaften).
+
+**"Starke regionale Streuung" - der gewählte Hebel war der falsche.** Der Name
+versprach einen "besonders deutlichen" Vorteil hafen-bewusster Gruppierung, aber die
+gewählten Parameter (geringe *Seefracht*-Streuung) beeinflussen gar nicht die
+*Straßenkosten*, auf denen dieser Vorteil eigentlich beruht - eine Verwechslung von
+zwei unterschiedlichen Streuungsarten im Modell. Nachgemessen: der Preset lieferte im
+Schnitt ~11 % Vorsprung - praktisch identisch zu einem gewöhnlichen Szenario ganz ohne
+besondere Zuschneidung (~11 %). Systematisch nach dem tatsächlich wirksamen Hebel
+gesucht (Variation von Hafen-, Regionen- und Packstückzahl): mehr Häfen und mehr
+Packstücke verstärken den Effekt deutlich, mehr Regionen leicht. Neue Konfiguration
+(n=80, r=8, p=5 - beide Regler an ihrem Maximum) liefert bei Seed 1 einen Vorsprung
+von 26 % - mehr als doppelt so stark wie zuvor, und über mehrere Seeds robust bei
+~16-17 % im Schnitt.
+
+Beide Korrekturen mit Regressionstests abgesichert:
+`test_teure_seefracht_preset_reliably_flips_winner`,
+`test_starke_regionale_streuung_preset_shows_amplified_advantage`.
+
+**Ein Nebenfund beim Nachbessern:** Bei den Test-Anpassungen für den neuen
+"Beam Search lohnt sich"-Preset wurde versehentlich eine Funktionssignatur gelöscht -
+der Test für "Teure Seefracht" lief danach unbemerkt als angehängter Code innerhalb
+eines anderen Tests weiter (keine Fehlermeldung, aber auch keine eigenständige
+Prüfung mehr). Per `pytest --collect-only` aufgefallen und behoben - eine Erinnerung,
+nach größeren Testdatei-Änderungen die tatsächlich gesammelte Testanzahl zu prüfen,
+nicht nur ob die Suite grün durchläuft.
 
 ## 1. Lokal ausführen
 
@@ -402,7 +438,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-77 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
+80 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
 
 ## 3. Kostenlos online stellen (Streamlit Community Cloud)
 
@@ -417,8 +453,6 @@ pytest tests/ -v
 - Keine echte Straßenroutenplanung ab Hafen (Straßenkosten sind eine Region-Hafen-
   Kostenmatrix, keine tatsächliche Tourenplanung mit mehreren Lieferfahrzeugen)
 - Keine Mehrfach-Zielorte je Packstück, keine Liefertermine/Zeitfenster
-- Kein dritter Ansatz - zwei Methoden mit demselben Packmechanismus und
-  unterschiedlicher Gruppierung reichen, um den Kipppunkt sauber zu isolieren
 
 ## 5. Anpassungsideen für später
 
