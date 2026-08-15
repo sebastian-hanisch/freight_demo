@@ -4,6 +4,7 @@ Muster wie in den anderen drei Demos, von Anfang an mit NaN/Bounds-Schutz.
 """
 
 import math
+import random
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -54,6 +55,22 @@ def apply_preset(n_items_val, n_regions_val, n_ports_val, capacity_val, sea_frei
     st.session_state["sea_spread_slider"] = sea_spread_val
     st.session_state["beam_width_slider"] = beam_width_val
     st.session_state["seed_input"] = seed_val
+    st.session_state["force_regen"] = True
+
+
+def randomize_seed():
+    """on_click-Callback für den 'Neues Szenario generieren'-Button.
+
+    Auf Nutzerhinweis korrigiert (identischer Fehler wie beim analogen VRP-
+    Button, siehe dortige Historie): der Button rief zuvor nur ein normales
+    st.button() auf, dessen Wert zwar in die gen_key-Neuberechnung einfloss
+    (`regenerate or force_regen`), aber bei UNVERÄNDERTEM Seed erzeugt die
+    deterministische Zufallserzeugung dieselben Werte erneut - ein Klick
+    bewirkte dadurch sichtbar GAR NICHTS, wenn man nicht zusätzlich selbst
+    eine neue Seed-Zahl eintippte. Jetzt würfelt der Klick selbst einen
+    neuen, zufälligen Seed - ein Klick liefert garantiert ein komplett
+    neues Szenario."""
+    st.session_state["seed_input"] = random.randint(0, 2_000_000_000)
     st.session_state["force_regen"] = True
 
 

@@ -483,6 +483,43 @@ Prüfung mehr). Per `pytest --collect-only` aufgefallen und behoben - eine Erinn
 nach größeren Testdatei-Änderungen die tatsächlich gesammelte Testanzahl zu prüfen,
 nicht nur ob die Suite grün durchläuft.
 
+## Auf Nutzerwunsch ergänzt: finale Hafen-Zuordnung nebeneinander im Vergleichs-Tab
+
+Die VRP-Demo zeigt im Vergleichs-Tab bereits die finalen Touren aller Methoden
+nebeneinander (eigene kleine Karte je Methode), die Pack-Demo bekam dasselbe für ihre
+finalen Packungen - hier auf die Fracht-Demo übertragen. Jede der drei Methoden bekommt
+jetzt ihre eigene finale Hafen-Zuordnungskarte (`build_freight_map`) direkt
+nebeneinander, mit den Gesamtkosten in der Beschriftung - zusätzlich zur bereits
+vorhandenen numerischen Tabelle.
+
+Technisch unkompliziert: `render_freight_panel` gab die `assignments` bereits im
+zurückgegebenen Summary-Dict zurück, `build_freight_map` war bereits importiert (wird
+auch in den einzelnen Tabs verwendet) - nur in `st.columns()` aufgerufen, exakt nach
+demselben Muster wie in der VRP- und Pack-Demo.
+`test_comparison_tab_shows_final_port_assignment_side_by_side`.
+
+## Vom Nutzer gemeldet: "Neues Szenario generieren" tat bei unverändertem Seed nichts
+
+Im Zuge einer Konsistenzprüfung über alle vier Demos gefunden (identischer Fehler auch
+in der Tourenplanung-Demo, dort zuerst gefunden und behoben - siehe dortiges README für
+die volle Herleitung): der Button rief nur ein normales `st.button()` auf. Sein Wert
+floss zwar in die `gen_key`-Neuberechnung ein (`regenerate or force_regen`), aber die
+automatische Neugenerierung reagiert bereits auf jede Änderung von Parametern oder Seed
+- blieb der Seed unverändert, lieferte die deterministische Zufallserzeugung dieselben
+Werte erneut. Ein Klick löste zwar technisch eine Neuberechnung aus, das Ergebnis war
+aber identisch - für den Nutzer sichtbar ein reiner Leerlauf-Klick.
+
+**Der bestehende Test hatte diese Lücke nicht erkannt:** `test_regenerate_button` prüfte
+nur "kein Absturz", nie die tatsächliche Wirkung. Auf echte Wirkungsprüfung umgestellt
+(Seed muss sich nach dem Klick unterscheiden).
+
+**Fix, kein ersatzloses Entfernen:** statt den wirkungslosen Button zu streichen, bekam
+er eine echte Funktion - er würfelt jetzt einen neuen Zufalls-Seed (`randomize_seed()`
+in `freight_presets.py`, nach demselben `on_click`-Callback-Muster wie `apply_preset`).
+Ein Klick liefert garantiert ein komplett neues Szenario, ohne selbst eine neue
+Seed-Zahl eintippen zu müssen.
+`test_regenerate_button` (verstärkt).
+
 ## 1. Lokal ausführen
 
 ```bash
@@ -500,7 +537,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-85 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
+86 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
 
 ## 3. Kostenlos online stellen (Streamlit Community Cloud)
 

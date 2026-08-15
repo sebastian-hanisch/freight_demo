@@ -26,7 +26,7 @@ from freight_evaluation import evaluate_assignment
 from freight_feedback import log_feedback
 from freight_heuristics import blind_packing_construction, flexible_beam_search_construction, port_aware_construction
 from freight_pdf_export import generate_consolidation_plan_pdf
-from freight_presets import apply_preset, bounds, init_session_state_defaults, load_permalink_settings, sync_query_params
+from freight_presets import apply_preset, bounds, init_session_state_defaults, load_permalink_settings, randomize_seed, sync_query_params
 from freight_ui_panel import render_freight_panel
 from freight_visualization import build_freight_map
 
@@ -94,7 +94,11 @@ with st.sidebar:
     )
     seed = st.number_input("Zufalls-Seed", step=1, key="seed_input")
 
-    regenerate = st.button("🔄 Neues Szenario generieren", use_container_width=True)
+    st.button(
+        "🎲 Neues Szenario generieren", use_container_width=True, on_click=randomize_seed,
+        help="Würfelt einen neuen Zufalls-Seed und erzeugt damit ein komplett neues Szenario - "
+        "praktisch, ohne selbst eine neue Seed-Zahl eintippen zu müssen.",
+    )
 
 sync_query_params(n_items, n_regions, n_ports, capacity, sea_freight, sea_spread, seed, beam_width)
 
@@ -103,7 +107,7 @@ if "force_regen" not in st.session_state:
 
 gen_key = (n_items, n_regions, n_ports, capacity, sea_freight, sea_spread, int(seed))
 needs_init = (
-    "gen_key_cache" not in st.session_state or regenerate or st.session_state.force_regen
+    "gen_key_cache" not in st.session_state or st.session_state.force_regen
     or st.session_state.get("gen_key_cache") != gen_key
 )
 if needs_init:
@@ -228,6 +232,15 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
             "lohnenden Hafen-Wechseln - das beste Ergebnis gewinnt, garantiert nie schlechter als eine "
             "der drei Alternativen (siehe README)."
         )
+
+        st.markdown("**Finale Hafen-Zuordnung im direkten Vergleich**")
+        summaries_ordered = [summary_blind, summary_aware, summary_beam]
+        cols = st.columns(len(summaries_ordered))
+        for col, s in zip(cols, summaries_ordered):
+            with col:
+                st.caption(f"{s['label']} (final, {s['total_cost']:.0f} €)")
+                fig_c = build_freight_map(port_coords, region_coords, s["assignments"], item_regions, item_sizes)
+                st.plotly_chart(fig_c, use_container_width=True, key=f"compare_{s['label']}")
 
 with st.expander("Wie funktioniert diese Demo?"):
     st.markdown(

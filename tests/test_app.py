@@ -148,9 +148,16 @@ def test_starke_regionale_streuung_preset_shows_amplified_advantage():
 
 
 def test_regenerate_button():
+    """Verstärkt auf Nutzerhinweis: prüfte zuvor nur 'kein Absturz', nicht
+    die tatsächliche Wirkung - genau die Art Test, die den ursprünglichen
+    Fehler (Button ohne Effekt bei unverändertem Seed, siehe
+    randomize_seed-Docstring in freight_presets.py) nicht erkannt hätte."""
     at = fresh_app()
+    seed_before = at.sidebar.number_input(key="seed_input").value
     at.sidebar.button[0].click().run(timeout=TIMEOUT)
     assert_ok(at)
+    seed_after = at.sidebar.number_input(key="seed_input").value
+    assert seed_after != seed_before, "Seed hat sich durch den Klick nicht geändert"
 
 
 @pytest.mark.parametrize("slider_idx,value", [(0, 100), (0, 10), (1, 8), (1, 3), (2, 5), (2, 2)])
@@ -896,3 +903,15 @@ def test_flexible_beam_worst_case_completes_within_budget():
         flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=6)
         worst = max(worst, time.time() - t0)
     assert worst < 2.0, f"Worst Case dauerte {worst:.1f}s"
+
+
+def test_comparison_tab_shows_final_port_assignment_side_by_side():
+    """Auf Nutzerwunsch ergänzt (analog zur bereits bestehenden Funktion in
+    der VRP-Demo und der neu ergänzten in der Pack-Demo): der Vergleichs-Tab
+    zeigt jetzt für jede der drei Methoden die finale Hafen-Zuordnung als
+    eigene Karte nebeneinander, nicht nur die numerische Vergleichstabelle."""
+    at = fresh_app()
+    captions = [str(c.value) for c in at.caption if "(final," in str(c.value)]
+    assert len(captions) == 3, f"Erwartete 3 Beschriftungen für die finalen Zuordnungen, gefunden: {captions}"
+    for label in ["Blind gepackt", "Hafen-bewusst gruppiert", "Beam Search"]:
+        assert any(label in c for c in captions), f"Beschriftung für {label} fehlt"
