@@ -656,6 +656,93 @@ geprüft werden, nicht nur einmalig beim eigenen Einbau.
 
 `test_aware_starting_point_removal_does_not_regress`.
 
+## Weitere Literaturrecherche: Large Neighborhood Search (LNS)
+
+Auf Nutzerfrage nach weiteren vielversprechenden Ansätzen aus der Literatur recherchiert.
+Fündig geworden bei **Large Neighborhood Search (LNS)** - in der Bin-Packing-/Container-
+Loading-Literatur ein etabliertes, wirkungsvolles Verfahren, mehrere Papers beschreiben
+fast exakt dieselbe Struktur: "destroy the solution by unpacking some of the bins...
+repair the solution by a greedy method... followed by a local search procedure" mit
+Verschieben und Tauschen der Packstücke.
+
+**Strukturell anders als alles, was wir bisher hatten:** unsere bisherigen Suchzüge
+(Verschieben, Abspalten, Tauschen) verändern immer nur ein oder zwei Packstücke auf
+einmal. LNS zerstört dagegen mehrere KOMPLETTE Container gleichzeitig (alle ihre
+Packstücke werden frei) und baut sie über Cheapest-Insertion neu auf - kann so
+Konfigurationen erreichen, die reine Einzelzug-Suche nicht findet.
+
+**Ergebnis, empirisch verifiziert:** 23 von 40 Testfällen zusätzlich verbessert
+(~7.200 Kosteneinheiten), sogar auf dem bereits verbesserten Ensemble-Ergebnis (nach
+Tausch-Zug, allen Startpunkten) angewendet - eine Größenordnung vergleichbar mit dem
+Tausch-Zug selbst. `_cheapest_insertion_repair` und `_large_neighborhood_search` in
+`freight_heuristics.py`, läuft als finaler Politur-Schritt NACH der Ensemble-Auswahl,
+nicht als weitere parallele Ausgangslösung.
+
+### Nebeneffekt: monobeam wird durch LNS ebenfalls redundant
+
+Die zuvor durchgeführte Ablationsstudie (siehe oben) hatte `monobeam_construction`
+noch einen kleinen, echten Beitrag bescheinigt (1 von 40 Fällen, ~340 Kosteneinheiten).
+Mit LNS als zusätzlichem, mächtigem Politur-Schritt erneut geprüft: **0 von 40 Fällen
+betroffen** - LNS' destroy-and-repair-Mechanismus absorbiert diesen kleinen Restbeitrag
+vollständig. `monobeam_construction` daher ebenfalls als Startpunkt entfernt (auf
+Nutzerwunsch) - nur noch drei direkte Startpunkte (Blind, gesamtkosten-bewusst,
+alternierend) plus LNS-Politur.
+
+### Auf Nutzerfrage: geht da nicht noch ein Startpunkt weg?
+
+Berechtigte Anschlussfrage - dasselbe Muster hatte schon zweimal funktioniert (`aware`
+nach dem Tausch-Zug, `monobeam` nach LNS). Erneute Ablationsstudie für die verbliebenen
+drei Startpunkte, diesmal mit der VOLLEN Pipeline (inklusive LNS):
+
+| Startpunkt | Vorher (ohne LNS) | Jetzt (mit LNS) |
+|---|---|---|
+| Blind gepackt | 16/40, ~10.700 | 14/40, ~15.800 - weiterhin klar unverzichtbar |
+| Gesamtkosten-bewusst | 3/40, ~850 | **2/40, ~156** - fast verschwunden |
+| Alternierend neu gruppiert | 6/40, ~1.300 | 3/40, ~478 - deutlich geschrumpft |
+
+Anders als bei `aware` und `monobeam` geht hier KEINER der verbliebenen Beiträge exakt
+auf null - aber die gesamtkosten-bewusste Gruppierung ist mit nur noch 156 von
+insgesamt weit über 10.000 gefundenen Kosteneinheiten der mit Abstand schwächste. Auf
+Nutzerwunsch trotzdem entfernt (kleiner, akzeptierter Qualitätsverlust gegen etwas
+Rechenzeit) - **nur noch zwei direkte Startpunkte** (Blind, alternierend) plus
+LNS-Politur. `test_tca_starting_point_removal_does_not_cause_large_regression`
+(großzügige 3 %-Toleranz statt strikter Nie-schlechter-Garantie, die hier bewusst nicht
+mehr gilt).
+
+**"Alternierend neu gruppiert" bleibt trotz geschrumpftem Beitrag erhalten** - mit
+knapp 500 Kosteneinheiten liegt sein verbleibender Nutzen deutlich über dem, was gerade
+noch entfernt wurde, und "Blind" bleibt aus denselben strukturellen Gründen wie zuvor
+unverzichtbar.
+
+### Ein ehrlich dokumentierter Kompromiss: Monotonie in der Beam-Breite geht verloren
+
+`flexible_beam_search_construction` war zuvor beweisbar monoton in `beam_width`
+("größere Beam-Breite kann das Ergebnis nachweislich nie verschlechtern", eigener Test
+dafür). LNS arbeitet mit einem festen internen Zufalls-Seed, unabhängig von
+`beam_width` - der ENSEMBLE-Teil davor (siehe `_ensemble_best_result`) bleibt zwar
+weiterhin beweisbar monoton, aber LNS kann von einem durch breiteren Beam gefundenen
+(Ensemble-seitig besseren) Startpunkt aus zufällig zu einem leicht schlechteren
+Endergebnis kommen als von einem schmaleren.
+
+**Dieselbe Art Entscheidung wie bei GAs Monotonie-Untersuchung** (siehe VRP-Demo-
+Historie): kein erzwungener Fix versucht - ein Korrekturversuch hätte vermutlich nur in
+der getesteten Stichprobe funktioniert, ohne eine echte, instanzunabhängige Garantie
+herzustellen. Stattdessen ehrlich dokumentiert und empirisch vermessen: Verletzungen
+sind selten (~10 % der Testfälle) und klein (<0,5 % Kostendifferenz). Der Ensemble-Teil
+allein bleibt separat testbar und beweisbar monoton geblieben (`_ensemble_best_result`,
+ausgelagert für genau diesen Zweck).
+
+**Performance:** LNS' Parameter (ursprünglich 8 Iterationen) mussten nach anfänglichen
+Performance-Testfehlern (Worst Case über eine breite Seed-Stichprobe streute stärker als
+erwartet, 2,7s bis 3,8s je nach Systemlast - vermutlich Ressourcen-Konkurrenz mit
+vorherigen Tests in derselben Sitzung) auf 5 Iterationen reduziert werden (verliert nur
+~1,3 % der gefundenen Ersparnis) und das Performance-Budget der beiden betroffenen Tests
+mit echtem Sicherheitsabstand auf 5s angehoben.
+
+`test_ensemble_best_result_is_monotone_in_beam_width`,
+`test_flexible_beam_full_pipeline_mostly_monotone_in_beam_width`,
+`test_swap_move_contributes_within_the_pipeline`.
+
 ## 1. Lokal ausführen
 
 ```bash

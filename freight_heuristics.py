@@ -591,6 +591,146 @@ def _alternating_regroup(base_containers, item_sizes, item_regions, capacity, ro
     return containers
 
 
+def _cheapest_insertion_repair(free_items, remaining_containers, item_sizes, item_regions, capacity, road_cost, sea_freight):
+    """Repair-Schritt für Large Neighborhood Search (siehe
+    _large_neighborhood_search): fügt freigesetzte Packstücke (größte
+    zuerst) jeweils in den Container ein, der die geringsten Zusatzkosten
+    verursacht - oder startet einen neuen Container, falls nirgends genug
+    Platz ist. Cheapest-Insertion, das in der LNS-Literatur (siehe
+    README) etablierte Standard-Repair-Muster."""
+    containers = [list(c) for c in remaining_containers]
+    order = sorted(free_items, key=lambda i: -item_sizes[i])
+    for idx in order:
+        size = item_sizes[idx]
+        best_c, best_extra = None, float("inf")
+        for c_idx, cont in enumerate(containers):
+            used = sum(item_sizes[i] for i in cont)
+            if used + size > capacity + EPS:
+                continue
+            old_cost = _best_port_for_container(cont, item_regions, item_sizes, road_cost, sea_freight)[1]
+            new_cost = _best_port_for_container(cont + [idx], item_regions, item_sizes, road_cost, sea_freight)[1]
+            extra = new_cost - old_cost
+            if extra < best_extra:
+                best_extra = extra
+                best_c = c_idx
+        if best_c is not None:
+            containers[best_c].append(idx)
+        else:
+            containers.append([idx])
+    return containers
+
+
+def _large_neighborhood_search(base_containers, item_sizes, item_regions, capacity, road_cost, sea_freight,
+                                n_iterations=5, destroy_count=2, seed=0):
+    """Large Neighborhood Search (LNS): zerstört je Iteration
+    `destroy_count` zufällig gewählte Container KOMPLETT (alle ihre
+    Packstücke werden frei), fügt die freien Packstücke per Cheapest-
+    Insertion wieder ein (siehe _cheapest_insertion_repair), poliert
+    danach mit der bestehenden Verbesserungssuche (_improve_from_baseline).
+    Behält das beste je gefundene Ergebnis.
+
+    Auf Nutzerfrage nach weiteren vielversprechenden Literatur-Ansätzen
+    ergänzt (siehe README): LNS ist in der Bin-Packing-/Container-Loading-
+    Literatur ein etabliertes, wirkungsvolles Verfahren (mehrere Papers
+    beschreiben fast exakt dieselbe Struktur - "destroy the solution by
+    unpacking some of the bins... repair the solution by a greedy
+    method... followed by a local search procedure" mit Verschieben und
+    Tauschen, siehe README). Strukturell anders als unsere bisherigen
+    Suchzüge: die verändern immer nur EIN oder ZWEI Packstücke auf einmal
+    (Verschieben, Abspalten, Tauschen), LNS zerstört dagegen mehrere
+    KOMPLETTE Container gleichzeitig - kann so Konfigurationen erreichen,
+    die reine Einzelzug-Suche nicht findet.
+
+    Ergebnis: mit 23 von 40 Testfällen zusätzlich verbessert (~7.200
+    Kosteneinheiten Gesamtersparnis), sogar auf dem bereits verbesserten
+    Ensemble-Ergebnis (nach Tausch-Zug, allen Startpunkten) angewendet -
+    eine Größenordnung vergleichbar mit dem Tausch-Zug selbst. Parameter
+    (n_iterations=5, destroy_count=2) empirisch gewählt: eine erste Wahl
+    (8 Iterationen) lieferte über eine breite Seed-Stichprobe gelegentlich
+    Worst-Case-Zeiten über dem 3s-Budget (~3,3-3,5s statt der in kleineren
+    Stichproben gemessenen ~2s) - 5 Iterationen verlieren gegenüber 8 nur
+    ~1,3 % der gefundenen Ersparnis (7.153 statt 7.245 Kosteneinheiten),
+    bei zuverlässig niedrigerer Rechenzeit."""
+    rng = np.random.default_rng(seed)
+
+    def total_cost(containers):
+        return sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in containers)
+
+    best_containers = [list(c) for c in base_containers]
+    best_cost = total_cost(best_containers)
+    current_containers = best_containers
+
+    for _it in range(n_iterations):
+        containers = [list(c) for c in current_containers]
+        if len(containers) <= destroy_count:
+            break
+        destroy_idx = rng.choice(len(containers), size=destroy_count, replace=False)
+        destroy_set = set(destroy_idx.tolist())
+        free_items = [i for k in destroy_set for i in containers[k]]
+        remaining = [c for k, c in enumerate(containers) if k not in destroy_set]
+
+        repaired = _cheapest_insertion_repair(free_items, remaining, item_sizes, item_regions, capacity, road_cost, sea_freight)
+        polished, polished_cost = _improve_from_baseline(repaired, item_sizes, item_regions, capacity, road_cost, sea_freight, 2, 2)
+
+        if polished_cost < best_cost - 1e-6:
+            best_cost = polished_cost
+            best_containers = polished
+        current_containers = polished  # weitermachen ab dem aktuellen (nicht nur dem besten) Zustand
+
+    return best_containers, best_cost
+
+
+def _ensemble_best_result(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=2, max_rounds=None):
+    """Ensemble-Kern von flexible_beam_search_construction, ausgelagert
+    für separate Testbarkeit (siehe README, neunter Fund): dieser Teil
+    bleibt weiterhin beweisbar monoton in beam_width (0 von 20 Testfällen
+    verletzt) - nur die anschließende LNS-Politur (siehe
+    _large_neighborhood_search, mit festem internem Zufalls-Seed) bricht
+    die Garantie für die GESAMTE Pipeline. Gibt (beste_container,
+    bester_score) zurück."""
+    n = len(item_sizes)
+    if max_rounds is None:
+        max_rounds = 3
+
+    # Hafen-bewusste Gruppierung: wird NICHT mehr direkt als eigene
+    # Ausgangslösung für die Verbesserungssuche verwendet (siehe README,
+    # Ablationsstudie) - aber weiterhin als Grundlage für die alternierende
+    # Neu-Gruppierung (Ausgangslösung 2) gebraucht.
+    n_regions = road_cost.shape[0]
+    best_port_per_region = np.argmin(road_cost, axis=1)
+    groups = defaultdict(list)
+    for idx in range(n):
+        region = item_regions[idx]
+        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
+        groups[preferred].append(idx)
+    aware_containers = []
+    for _preferred_port, idxs in groups.items():
+        aware_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
+
+    # Ausgangslösung 1: Blind gepackt (dieselbe Grundlage wie
+    # blind_packing_construction - reine Groessen-FFD ohne Gruppierung)
+    blind_containers = _ffd_pack(list(range(n)), item_sizes, capacity)
+
+    # Ausgangslösung 2: alternierende Neu-Gruppierung ab der Hafen-
+    # bewussten Ausgangslösung (siehe _alternating_regroup)
+    alt_containers = _alternating_regroup(aware_containers, item_sizes, item_regions, capacity, road_cost, sea_freight)
+
+    # monobeam_construction war bis hierher eine vierte, und gesamtkosten-
+    # bewusste Gruppierung (siehe _total_cost_aware_port_preference) eine
+    # dritte Ausgangslösung - nach Einführung der LNS-Politur (siehe unten)
+    # beide empirisch verifiziert weitgehend redundant geworden. monobeam
+    # vollständig (0 von 40 Testfällen betroffen bei Entfernung),
+    # gesamtkosten-bewusst fast vollständig (nur noch 2 von 40 Fällen,
+    # ~156 statt vorher ~850 Kosteneinheiten Verlust) - auf Nutzerwunsch
+    # trotz des kleinen verbleibenden Beitrags ebenfalls entfernt, siehe
+    # README. Nur noch zwei direkte Startpunkte, spart einen weiteren
+    # vollen _improve_from_baseline-Aufruf.
+    best_from_blind = _improve_from_baseline(blind_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
+    best_from_alt = _improve_from_baseline(alt_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
+
+    return min([best_from_blind, best_from_alt], key=lambda t: t[1])
+
+
 def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=2, max_rounds=None):
     """Erweiterung auf ausdrücklichen Wunsch: die starre Vorab-Gruppierung
     nach individuell günstigstem Hafen (port_aware_construction,
@@ -715,65 +855,32 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
     wenn spätere Ergänzungen (hier: der Tausch-Zug) einen Teil ihres
     Wirkungsbereichs mit abdecken - ein Startpunkt sollte nach jeder
     größeren Suchverbesserung erneut auf seinen GRENZNUTZEN geprüft
-    werden, nicht nur einmalig beim eigenen Einbau."""
+    werden, nicht nur einmalig beim eigenen Einbau.
+
+    EIN NEUNTER FUND, auf Nutzeranfrage nach weiteren Literatur-Ansätzen
+    untersucht: Large Neighborhood Search (LNS) als finaler Politur-
+    Schritt ergänzt (siehe _large_neighborhood_search) - bricht dabei die
+    zuvor bewiesene Monotonie in der Beam-Breite (siehe README für die
+    vollständige Herleitung und die Parallele zu GAs Monotonie-
+    Untersuchung). Der ENSEMBLE-Teil VOR LNS (siehe _ensemble_best_result)
+    bleibt weiterhin beweisbar monoton - nur die LNS-Politur danach (mit
+    festem internem Zufalls-Seed, unabhängig von beam_width) verletzt die
+    Garantie in ~10 % der Testfälle, jeweils um <0,5 % Kostendifferenz."""
     n = len(item_sizes)
     if n == 0:
         return []
 
-    if max_rounds is None:
-        max_rounds = 3
+    best_containers, _best_score = _ensemble_best_result(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
 
-    # Hafen-bewusste Gruppierung: wird NICHT mehr direkt als eigene
-    # Ausgangslösung für die Verbesserungssuche verwendet (siehe unten,
-    # Ablationsstudie) - aber weiterhin als Grundlage für die alternierende
-    # Neu-Gruppierung (Ausgangslösung 4) gebraucht.
-    n_regions = road_cost.shape[0]
-    best_port_per_region = np.argmin(road_cost, axis=1)
-    groups = defaultdict(list)
-    for idx in range(n):
-        region = item_regions[idx]
-        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
-        groups[preferred].append(idx)
-    aware_containers = []
-    for _preferred_port, idxs in groups.items():
-        aware_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
-
-    # Ausgangslösung 1: Blind gepackt (dieselbe Grundlage wie
-    # blind_packing_construction - reine Groessen-FFD ohne Gruppierung)
-    blind_containers = _ffd_pack(list(range(n)), item_sizes, capacity)
-
-    # Ausgangslösung 2: monobeam_construction (eigenständige, unabhängige
-    # Beam-Search-Konstruktion, siehe README - liefert manchmal eine
-    # strukturell andere Gruppierung, von der aus die Verbesserungssuche
-    # Lösungen findet, die weder von "Blind" noch von "Hafen-bewusst" aus
-    # erreichbar sind, z. B. weil monobeam Packstücke anders auf Container
-    # verteilt als eine reine Größen-FFD). WICHTIG: nutzt eine EIGENE,
-    # von `beam_width` (Verbesserungssuche-Regler, kann bis 1 heruntergehen)
-    # entkoppelte Mindestbreite - monobeam_construction selbst braucht
-    # mindestens Breite 2 für gute Ergebnisse (getestet: bw=1 lieferte nach
-    # der Verbesserungssuche spürbar schlechtere Endergebnisse als bw=2,
-    # z. B. 13.520 statt 12.903 EUR bei einer Testinstanz; ab bw=2 kaum noch
-    # zusätzlicher Nutzen durch mehr Breite).
-    mono_construction_width = max(2, beam_width)
-    mono_assignments = monobeam_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=mono_construction_width, grouped=True)
-    mono_containers = [a["items"] for a in mono_assignments]
-
-    # Ausgangslösung 3: gesamtkosten-bewusst gruppiert (siehe
-    # _total_cost_aware_port_preference und Docstring oben, Fund 2)
-    tca_containers = _total_cost_aware_port_preference(item_sizes, item_regions, capacity, road_cost, sea_freight)
-
-    # Ausgangslösung 4: alternierende Neu-Gruppierung ab der Hafen-
-    # bewussten Ausgangslösung (siehe _alternating_regroup und Docstring
-    # oben, Fund 3)
-    alt_containers = _alternating_regroup(aware_containers, item_sizes, item_regions, capacity, road_cost, sea_freight)
-
-    best_from_blind = _improve_from_baseline(blind_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
-    best_from_mono = _improve_from_baseline(mono_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
-    best_from_tca = _improve_from_baseline(tca_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
-    best_from_alt = _improve_from_baseline(alt_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
-
-    best_containers, _best_score = min(
-        [best_from_blind, best_from_mono, best_from_tca, best_from_alt], key=lambda t: t[1],
+    # LNS-Politur als finaler Schritt (siehe _large_neighborhood_search
+    # und README): zerstört mehrere Container gleichzeitig und baut sie
+    # neu auf - kann Verbesserungen finden, die keiner der obigen
+    # Startpunkte über reine Einzelzug-Suche erreicht. Läuft auf dem
+    # bereits besten Ensemble-Ergebnis, nicht als weitere parallele
+    # Ausgangslösung - kann das Ergebnis nur gleich gut oder besser
+    # machen (behält das beste je gefundene Ergebnis).
+    best_containers, _best_lns_score = _large_neighborhood_search(
+        best_containers, item_sizes, item_regions, capacity, road_cost, sea_freight,
     )
 
     assignments = []
