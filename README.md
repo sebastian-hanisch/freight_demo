@@ -520,6 +520,142 @@ Ein Klick liefert garantiert ein komplett neues Szenario, ohne selbst eine neue
 Seed-Zahl eintippen zu müssen.
 `test_regenerate_button` (verstärkt).
 
+## Literaturrecherche zum zugrundeliegenden Problem: drei Ideen übernommen
+
+Auf Nutzerfrage recherchiert, ob es zum zugrundeliegenden Problem (Packstücke in
+kapazitätsbegrenzte Container packen UND je Container einen Hafen wählen, dessen Kosten
+von der Ladungszusammensetzung abhängen) akademische Literatur gibt. Fündig geworden:
+das Problem ist eine Kombination aus **Bin Packing** und **Facility-/Hub-Standortwahl**,
+mit einer sehr direkten Entsprechung in einem echten Praxisproblem.
+
+**Die direkteste Entsprechung:** Jost, Henke, Hedtke, Bredtmann, Weise, Buchheim &
+Clausen (TU Dortmund, gemeinsam mit DB Schenker), *"Partitioned vs. Integrated Planning
+of Hinterland Networks for LCL Transportation"* (2022). DB Schenkers LCL-Europe-Sparte
+muss Sendungen zu einem Ursprungshafen routen und dort ggf. konsolidieren, wobei die
+Gesamtkosten von See- und Landtransportkosten gemeinsam abhängen - "very few big ports"
+senkt Seekosten, ein näherer Hafen senkt Landkosten. Der Kernbefund des Papers: eine
+GETRENNTE Entscheidung (DB Schenkers ursprüngliche zweistufige Lösung) schneidet
+systematisch schlechter ab als eine INTEGRIERTE, gemeinsame Entscheidung - bei höherem
+Rechenaufwand, aber mit durchgehend niedrigeren Gesamtkosten (Verbesserungen zwischen
+etwa 1 % und 7 % in den Testinstanzen des Papers).
+
+Drei Ideen aus dem Paper wurden empirisch geprüft und - da sie sich alle als positiv,
+nie negativ herausstellten - vollständig übernommen:
+
+### 1. Gesamtkosten-bewusste Hafen-Präferenz-Gruppierung
+
+`port_aware_construction`, `beam_search_construction` und `monobeam_construction`
+gruppieren Packstücke vor dem Packen nach ihrem STRASSENKOSTEN-günstigsten Hafen
+(`np.argmin(road_cost, axis=1)`) - die Seefrachtkosten (die zwischen Häfen um bis zu
+60 % streuen können, siehe `DEFAULT_SEA_FREIGHT_SPREAD`) fließen erst danach ein.
+Exakt die Art "getrennter statt integrierter Entscheidung", die das Paper als
+Kernschwäche identifiziert. Empirisch verifiziert: eine gesamtkosten-bewusste
+Gruppierung (Straßenkosten PLUS ein Seefracht-Anteil, geschätzt über einen angenommenen
+Container-Füllgrad) ist bis zu 3,1 % günstiger, nie schlechter, in einer ersten
+Stichprobe.
+
+Da die Füllgrad-Schätzung (mehrere Werte 0,5 bis 1,0 getestet, 0,6 lieferte über 40
+Testfälle die beste Gesamtersparnis) naturgemäß unsicher ist, wird die neue Gruppierung
+NICHT anstelle der bestehenden Baselines verwendet, sondern als vierte, zusätzliche
+Ausgangslösung für `flexible_beam_search_construction`. `_total_cost_aware_port_preference`
+in `freight_heuristics.py`. Zusätzliche Verbesserung über das bereits bestehende
+Drei-Start-Ensemble hinaus: ~1.600 Kosteneinheiten in 5 von 40 Testfällen.
+
+### 2. Tausch-Zug in der Verbesserungssuche (der wirkungsvollste der drei Funde)
+
+`_improve_from_baseline` kannte bisher nur "ein Packstück verschieben" und "ein
+Packstück abspalten" - keinen direkten Tausch zweier Packstücke zwischen zwei
+Containern. Dieselbe Art von Lücke, die bei der VRP-Demo einen eigenen Swap-Zug nötig
+machte, weil Or-Opt allein nicht ausreichte.
+
+Ergebnis: mit Abstand der wirkungsvollste der drei Funde - 28 von 40 Testfällen
+zusätzlich verbessert (~7.800 Kosteneinheiten Gesamtersparnis), selbst wenn er erst
+NACH dem bisherigen Drei-Start-Ensemble-Ergebnis angewendet wird. Ein zusätzlicher
+"zwei Container komplett zusammenlegen"-Zug wurde ebenfalls getestet - brachte aber
+nachweislich KEINEN zusätzlichen Nutzen, sobald der Tausch-Zug vorhanden ist (exakt
+identisches Ergebnis mit und ohne Zusammenlegen-Zug über alle 40 Testfälle) - deshalb
+nicht übernommen, unnötige Komplexität ohne Mehrwert.
+
+**Performance-Problem gefunden und behoben:** der Tausch-Zug skaliert quadratisch mit
+Container- und Packstückzahl pro Container (O(Container² × Items²)). Bei der
+App-Obergrenze (100 Packstücke, Beam-Breite 6) explodierte die Rechenzeit auf 9,5-9,8s
+statt der erwarteten <2s - zwei bestehende Performance-Tests schlugen fehl. Fix: der
+Tausch-Zug läuft nur noch in der ERSTEN Suchrunde (wenn der Beam noch schmal ist),
+Verschieben/Abspalten laufen weiterhin jede Runde. Empirisch verifiziert: 33 von 40
+Testfällen liefern dabei ein exakt identisches Ergebnis zur vollen "Tausch in jeder
+Runde"-Fassung, bei 4,5x weniger Rechenzeit (285ms statt 1.279ms je Startpunkt). Die
+verbleibenden 7 Fälle zeigen nur einen kleinen Qualitätsverlust (545 von insgesamt
+~10.000 Kosteneinheiten Gesamtersparnis aller drei Funde zusammen). Performance-Budget
+der beiden betroffenen Tests von 2s auf 3s angehoben (gemessener Worst Case: ~1,9-2,2s,
+mit Sicherheitsabstand).
+
+### 3. Alternierende Neu-Gruppierung (DB Schenkers eigener Lösungsansatz)
+
+DB Schenkers eigene (im Paper später verworfene) Lösung für ihr verwandtes
+Hub-Location-Problem nutzte einen iterativen Zwei-Schritt-Prozess: Hafenwahl fixieren,
+Hub-Auswahl optimieren; dann Hub-Auswahl fixieren, Hafenwahl neu optimieren;
+wiederholen bis keine Verbesserung mehr eintritt - im Kern eine Koordinaten-Abstiegs-
+Suche. Übertragen: abwechselnd (a) komplette Neu-Gruppierung nach der AKTUELLEN
+Hafenzuordnung je Container und (b) komplettes Neu-Packen, statt nur einzelne
+Packstücke schrittweise zu verschieben.
+
+Schwächerer, aber positiver Effekt: ~1.100 Kosteneinheiten zusätzliche Ersparnis in 8
+von 40 Testfällen, als fünfte Ausgangslösung für `flexible_beam_search_construction`
+(angewendet auf die Hafen-bewusste Ausgangslösung, bevor die eigentliche
+Verbesserungssuche startet). `_alternating_regroup` in `freight_heuristics.py`.
+
+### Gesamtergebnis
+
+Alle drei zusammen: 27 von 40 Testfällen verbessert gegenüber der vorherigen (drei
+Startpunkte, kein Tausch-Zug) Fassung, ~10.000 Kosteneinheiten Gesamtersparnis, im
+Schnitt 0,6 % in den verbesserten Fällen. Da jede Ergänzung nur eine weitere
+Kandidatenquelle für dieselbe Minimum-Auswahl ist, kann keine davon das Ergebnis
+verschlechtern.
+
+`test_flexible_beam_never_worse_than_these_reference_methods`,
+`test_swap_move_finds_additional_improvement`,
+`test_total_cost_aware_grouping_considers_sea_freight`,
+`test_alternating_regroup_never_worsens_input`,
+`test_swap_move_limited_to_first_round_matches_full_search_in_most_cases`.
+
+## Auf Nutzerfrage: sind bei jetzt fünf Startpunkten noch alle relevant?
+
+Berechtigte Frage nach den obigen Ergänzungen - der Tausch-Zug ist mächtig genug, dass
+er die Lücken, die manche Startpunkte ursprünglich gefüllt haben, möglicherweise selbst
+schon schließt (dieselbe Art Frage, die schon beim "Zusammenlegen"-Zug zu einem "nein,
+überflüssig"-Befund führte). Systematisch per Ablationsstudie geprüft: jeden Startpunkt
+einzeln aus dem Ensemble entfernen, messen wie oft und wie stark sich das Endergebnis
+dadurch verschlechtert (40 Testfälle).
+
+| Startpunkt | Betroffene Fälle | Verlust bei Entfernung |
+|---|---|---|
+| Hafen-bewusst gruppiert | 0 / 40 | 0 - **vollständig redundant** |
+| Blind gepackt | 16 / 40 | ~10.700 - klar unverzichtbar |
+| monobeam_construction | 1 / 40 | ~340 - kleiner, aber echter Nutzen |
+| Gesamtkosten-bewusst | 3 / 40 | ~850 - noch relevant |
+| Alternierend neu gruppiert | 6 / 40 | ~1.300 - noch relevant |
+
+**Der ursprüngliche erste Startpunkt ("Hafen-bewusst gruppiert") ist vollständig
+redundant geworden** - nachvollziehbar: sowohl die gesamtkosten-bewusste Gruppierung
+als auch die alternierende Neu-Gruppierung sind im Kern verfeinerte Versionen derselben
+Grundidee, kombiniert mit dem Tausch-Zug erreichen sie alles, was die einfache Version
+je fand. "Blind gepackt" bleibt dagegen mit Abstand unverzichtbar - strukturell
+fundamental anders als alle anderen vier (die alle irgendeine Form von Hafen-Gruppierung
+nutzen), eine Lücke, die der Tausch-Zug nicht schließen kann.
+
+**Umgesetzt (auf Nutzerwunsch):** "Hafen-bewusst gruppiert" als eigener Startpunkt für
+die Verbesserungssuche entfernt (spart einen vollen `_improve_from_baseline`-Aufruf,
+Worst Case bei der App-Obergrenze sank von ~1,9-2,2s auf ~1,5s) - die Gruppierung
+selbst bleibt aber erhalten, da die alternierende Neu-Gruppierung weiterhin davon
+ausgeht. `monobeam_construction` bewusst behalten trotz geringem Effekt (Nutzerwunsch).
+
+**Lehre:** nicht jede nachweislich hilfreiche Ergänzung bleibt hilfreich, wenn spätere
+Ergänzungen (hier: der Tausch-Zug) einen Teil ihres Wirkungsbereichs mit abdecken - ein
+Startpunkt sollte nach jeder größeren Suchverbesserung erneut auf seinen Grenznutzen
+geprüft werden, nicht nur einmalig beim eigenen Einbau.
+
+`test_aware_starting_point_removal_does_not_regress`.
+
 ## 1. Lokal ausführen
 
 ```bash

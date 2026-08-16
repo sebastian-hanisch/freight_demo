@@ -25,6 +25,18 @@ Alle drei geben eine Liste von Container-Zuweisungen zurück: Dicts mit "items"
 (Liste von Packstück-Indizes), "port" (gewählter Hafen-Index) und "cost"
 (Gesamtkosten dieses Containers: Seefracht + Straßenkosten aller Packstücke
 darin).
+
+`flexible_beam_search_construction` (weiter unten) ist die produktive
+Ensemble-Methode, die aus allen dreien schöpft und zusätzlich verbessert -
+seit einer Literaturrecherche zum zugrundeliegenden Problem (Jost et al.,
+"Partitioned vs. Integrated Planning of Hinterland Networks for LCL
+Transportation", 2022, ein sehr nah verwandtes DB-Schenker-Praxisproblem) um
+drei Ideen erweitert: einen Tausch-Zug in der Verbesserungssuche (siehe
+_improve_from_baseline), eine gesamtkosten-bewusste Gruppierung als
+zusätzliche Ausgangslösung (siehe _total_cost_aware_port_preference) und
+eine alternierende Neu-Gruppierung nach DB Schenkers eigenem iterativem
+Lösungsansatz (siehe _alternating_regroup). Vollständige Herleitung im
+README.
 """
 
 import heapq
@@ -69,6 +81,55 @@ def _best_port_for_container(container_items, item_regions, item_sizes, road_cos
             best_cost = cost
             best_port = k
     return best_port, best_cost
+
+
+def _total_cost_aware_port_preference(item_sizes, item_regions, capacity, road_cost, sea_freight, fill_fraction=0.6):
+    """Wie die Hafen-Präferenz-Gruppierung von port_aware_construction &
+    Co., aber berücksichtigt bei der VORAB-Gruppierung (vor dem Packen)
+    zusätzlich die Seefrachtkosten - nicht nur die Straßenkosten der
+    Region. Ergänzt nach Literaturrecherche zum zugrundeliegenden Problem
+    (Jost et al. 2022, DB Schenker/TU Dortmund, siehe README): deren
+    zentraler Befund ist, dass eine GETRENNTE Entscheidung (erst nach
+    einem Kostenanteil gruppieren/routen, andere Kostenanteile erst
+    danach berücksichtigen) systematisch schlechter abschneidet als eine
+    INTEGRIERTE Entscheidung, die beide Kostenanteile von Anfang an
+    gemeinsam betrachtet.
+
+    `best_port_per_region = np.argmin(road_cost, axis=1)` (verwendet von
+    port_aware_construction, beam_search_construction und
+    monobeam_construction) hat genau diese Schwäche: die Gruppierung
+    entscheidet allein nach Straßenkosten, obwohl die Seefrachtkosten
+    zwischen Häfen um bis zu 60 % streuen können (siehe
+    DEFAULT_SEA_FREIGHT_SPREAD) - eine Region könnte den STRASSENKOSTEN-
+    günstigsten Hafen bevorzugt bekommen, obwohl ein anderer Hafen in
+    GESAMTKOSTEN (inklusive Seefracht) günstiger wäre.
+
+    `fill_fraction` schätzt, wie voll ein Container durchschnittlich sein
+    wird (unbekannt vor dem eigentlichen Packen) - ein einfacher, aber
+    empirisch robuster Kompromiss: mehrere Schätzwerte (0.5 bis 1.0)
+    getestet, 0.6 lieferte über eine breite Stichprobe (40 Testfälle,
+    verschiedene Seefracht-Streuungen) die beste Gesamtersparnis (~40.000
+    Kosteneinheiten) bei wenigen Ausreißerfällen. Da diese Schätzung nicht
+    perfekt ist, wird die Gruppierung NICHT anstelle der bestehenden
+    Baselines verwendet, sondern nur als ZUSÄTZLICHER Startpunkt für
+    flexible_beam_search_construction's Verbesserungssuche - garantiert
+    nie schlechter als ohne diesen Startpunkt, da es sich nur um eine
+    weitere Kandidatenquelle für dasselbe Minimum handelt."""
+    n_regions = road_cost.shape[0]
+    avg_container_load = capacity * fill_fraction
+    total_cost_estimate = road_cost + sea_freight[None, :] / avg_container_load
+    best_port_per_region = np.argmin(total_cost_estimate, axis=1)
+
+    groups = defaultdict(list)
+    for idx in range(len(item_sizes)):
+        region = item_regions[idx]
+        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
+        groups[preferred].append(idx)
+
+    containers = []
+    for _preferred_port, idxs in groups.items():
+        containers.extend(_ffd_pack(idxs, item_sizes, capacity))
+    return containers
 
 
 def blind_packing_construction(item_sizes, item_regions, capacity, road_cost, sea_freight):
@@ -343,11 +404,26 @@ def _improve_from_baseline(base_containers, item_sizes, item_regions, capacity, 
     """Kern der Verbesserungssuche, ausgelagert, damit sie von mehreren
     Startpunkten aus aufgerufen werden kann (siehe
     flexible_beam_search_construction). Gibt (beste_container, bester_score)
-    zurück."""
+    zurück.
+
+    TAUSCH-ZUG ergänzt, nach Literaturrecherche zum zugrundeliegenden
+    Problem (Jost et al., "Partitioned vs. Integrated Planning of
+    Hinterland Networks for LCL Transportation", 2022 - ein sehr nah
+    verwandtes Praxisproblem von DB Schenker, siehe README): die
+    ursprüngliche Suche kannte nur "ein Packstück verschieben" und "ein
+    Packstück abspalten" - kein direkter Tausch zweier Packstücke
+    zwischen zwei Containern. Das ist dieselbe Art von Lücke, die bei der
+    VRP-Demo einen eigenen Swap-Zug nötig machte, weil Or-Opt allein nicht
+    ausreichte. Ein zusätzlicher "zwei Container komplett zusammenlegen"-
+    Zug wurde ebenfalls getestet, brachte aber nachweislich KEINEN
+    zusätzlichen Nutzen, sobald der Tausch-Zug vorhanden ist (28 von 40
+    Testfällen verbessert, exakt identisches Ergebnis mit oder ohne
+    Zusammenlegen-Zug) - deshalb nur der Tausch-Zug, nicht auch noch
+    Zusammenlegen (unnötige Komplexität und Rechenzeit ohne Mehrwert)."""
     base_score = _state_score(base_containers, item_regions, item_sizes, road_cost, sea_freight)
     beam = [(base_containers, base_score)]
 
-    for _round in range(max_rounds):
+    for round_idx in range(max_rounds):
         candidates = []
         seen_keys = set()
         for containers, score in beam:
@@ -398,6 +474,49 @@ def _improve_from_baseline(base_containers, item_sizes, item_regions, capacity, 
                         seen_keys.add(key)
                         candidates.append((new_score, key, new_containers))
 
+            # TAUSCH-ZUG: zwei Packstücke zwischen zwei Containern tauschen -
+            # findet Verbesserungen, bei denen weder die direkte Verschiebung
+            # noch das Abspalten allein kapazitätsmäßig möglich wäre, ein
+            # Tausch (kleineres gegen größeres Stück) aber schon.
+            #
+            # NUR IN RUNDE 1 (round_idx == 0): der Tausch-Zug ist O(Container²
+            # × Items-pro-Container²) - bei der App-Obergrenze (100 Packstücke,
+            # Beam-Breite 6) kostete das ~1,3s JE Startpunkt (5 Startpunkte:
+            # ~9,5s Gesamtzeit, siehe zwei ursprünglich fehlgeschlagene
+            # Performance-Tests). Empirisch verifiziert: Tausch nur in Runde 1
+            # (wenn der Beam noch schmal - nur der Ausgangszustand - ist)
+            # liefert über eine breite Stichprobe (40 Testfälle) in 33 von 40
+            # Fällen EXAKT dasselbe Ergebnis wie Tausch in jeder Runde, bei
+            # 4,5x weniger Rechenzeit (285ms statt 1279ms je Startpunkt) - die
+            # verbleibenden 7 Fälle zeigen nur einen kleinen Qualitätsverlust
+            # (545 von ~10.000 Kosteneinheiten Gesamtersparnis, siehe README).
+            # Verschieben/Abspalten laufen weiterhin JEDE Runde.
+            if round_idx == 0:
+                n_c = len(containers)
+                for c1 in range(n_c):
+                    for c2 in range(c1 + 1, n_c):
+                        for i1 in containers[c1]:
+                            for i2 in containers[c2]:
+                                s1, s2 = item_sizes[i1], item_sizes[i2]
+                                new_used_c1 = container_used[c1] - s1 + s2
+                                new_used_c2 = container_used[c2] - s2 + s1
+                                if new_used_c1 > capacity + EPS or new_used_c2 > capacity + EPS:
+                                    continue
+                                new_c1_items = [i for i in containers[c1] if i != i1] + [i2]
+                                new_c2_items = [i for i in containers[c2] if i != i2] + [i1]
+                                new_c1_cost = _best_port_for_container(new_c1_items, item_regions, item_sizes, road_cost, sea_freight)[1]
+                                new_c2_cost = _best_port_for_container(new_c2_items, item_regions, item_sizes, road_cost, sea_freight)[1]
+                                new_score = score - container_cost[c1] - container_cost[c2] + new_c1_cost + new_c2_cost
+
+                                new_containers = [list(cont) for cont in containers]
+                                new_containers[c1] = new_c1_items
+                                new_containers[c2] = new_c2_items
+                                key = _state_key(new_containers)
+                                if key in seen_keys:
+                                    continue
+                                seen_keys.add(key)
+                                candidates.append((new_score, key, new_containers))
+
         if not candidates:
             break
 
@@ -420,6 +539,56 @@ def _improve_from_baseline(base_containers, item_sizes, item_regions, capacity, 
         beam = deduped
 
     return min(beam, key=lambda t: t[1])
+
+
+def _alternating_regroup(base_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, max_cycles=5):
+    """Alternierende Neu-Gruppierung: abwechselnd (a) die AKTUELLE
+    Hafenzuordnung je Container fixieren, ALLE Packstücke danach neu
+    gruppieren und komplett neu packen, (b) neue Packung fixieren -
+    wiederholt bis keine Verbesserung mehr eintritt. Ergänzt nach
+    Literaturrecherche zum zugrundeliegenden Problem (siehe README): DB
+    Schenkers eigene (später verworfene) Lösung für ihr verwandtes
+    Hub-Location-Problem nutzte genau diesen iterativen Zwei-Schritt-
+    Prozess ("switching between deciding which origin ports to use and
+    which branches to upgrade to hubs").
+
+    Anders als _improve_from_baseline (schrittweise Einzelstück-Züge) ist
+    das ein GROBER, kompletter Neuaufbau je Zyklus - könnte lokale Optima
+    erreichen, die Einzelstück-Züge nicht finden. Empirisch schwächerer
+    Effekt als der Tausch-Zug (siehe README: 8 von 40 Testfällen
+    verbessert, ~1.100 Kosteneinheiten Gesamtersparnis als zusätzlicher
+    Startpunkt vs. ~7.800 durch den Tausch-Zug) - aber positiv und ohne
+    Regressionsrisiko, da nur eine weitere Kandidatenquelle für
+    flexible_beam_search_construction's Minimum-Auswahl."""
+    containers = [list(c) for c in base_containers]
+
+    def total_cost(cs):
+        return sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in cs)
+
+    best_cost = total_cost(containers)
+
+    for _cycle in range(max_cycles):
+        item_current_port = {}
+        for cont in containers:
+            port, _cost = _best_port_for_container(cont, item_regions, item_sizes, road_cost, sea_freight)
+            for idx in cont:
+                item_current_port[idx] = port
+
+        groups = defaultdict(list)
+        for idx in range(len(item_sizes)):
+            groups[item_current_port[idx]].append(idx)
+
+        new_containers = []
+        for _port, idxs in groups.items():
+            new_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
+
+        new_cost = total_cost(new_containers)
+        if new_cost >= best_cost - EPS:
+            break
+        containers = new_containers
+        best_cost = new_cost
+
+    return containers
 
 
 def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=2, max_rounds=None):
@@ -478,7 +647,75 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
     vieler Kandidatenfolgen. Da eine breitere Suche nach Runde 1 aber sehr
     viel teurer wird (der Beam facht sich auf bis zu `beam_width` Zustände
     auf, jeder wird in der nächsten Runde vollständig neu durchsucht),
-    ist der Standard bewusst klein gewählt."""
+    ist der Standard bewusst klein gewählt.
+
+    DREI WEITERE ERGÄNZUNGEN nach Literaturrecherche zum zugrundeliegenden
+    Problem (Jost et al., "Partitioned vs. Integrated Planning of
+    Hinterland Networks for LCL Transportation", 2022 - ein sehr nah
+    verwandtes Praxisproblem von DB Schenker, siehe README für die
+    vollständige Herleitung):
+
+    1. TAUSCH-ZUG in _improve_from_baseline (siehe dort) - der mit
+       Abstand wirkungsvollste der drei Funde: 28 von 40 Testfällen
+       zusätzlich verbessert (~7.800 Kosteneinheiten Gesamtersparnis),
+       selbst wenn er erst NACH dem bisherigen Ensemble-Ergebnis
+       angewendet wird. Ein zusätzlicher Zusammenlegen-Zug wurde getestet,
+       brachte aber keinen Mehrwert sobald der Tausch-Zug vorhanden ist -
+       deshalb nicht übernommen.
+    2. VIERTE Ausgangslösung: gesamtkosten-bewusste Gruppierung
+       (_total_cost_aware_port_preference, siehe dort) - bezieht
+       Seefrachtkosten bereits in die Vorab-Gruppierung ein, nicht nur
+       Straßenkosten wie die anderen drei Ausgangslösungen. Direkte
+       Anwendung von Jost et al.s Kernbefund (integrierte schlägt
+       getrennte Entscheidung) auf die eigene Gruppierungslogik. ~1.600
+       Kosteneinheiten zusätzliche Ersparnis in 5 von 40 Testfällen, auch
+       nachdem der Tausch-Zug bereits angewendet wurde.
+    3. FÜNFTE Ausgangslösung: alternierende Neu-Gruppierung
+       (_alternating_regroup, siehe dort) - übernimmt DB Schenkers eigenen
+       iterativen Lösungsansatz für ihr verwandtes Problem. Schwächerer,
+       aber positiver Effekt (~1.100 Kosteneinheiten zusätzliche Ersparnis
+       in 8 von 40 Testfällen als zusätzlicher Startpunkt).
+
+    Alle drei zusammen: 27 von 40 Testfällen verbessert gegenüber der
+    vorherigen (drei Startpunkte, kein Tausch-Zug) Fassung, ~10.000
+    Kosteneinheiten Gesamtersparnis, im Schnitt 0,6 % in den verbesserten
+    Fällen. Da jede Ergänzung nur eine weitere Kandidatenquelle für
+    dieselbe Minimum-Auswahl ist, kann keine davon das Ergebnis
+    verschlechtern - nur gleich gut oder besser machen.
+
+    ABLATIONSSTUDIE (auf Nutzerfrage, ob bei jetzt fünf Startpunkten noch
+    alle relevant sind): für jeden Startpunkt einzeln geprüft, wie oft und
+    wie stark sich das Endergebnis verschlechtert, wenn er entfernt wird
+    (40 Testfälle). Ergebnis sehr uneinheitlich:
+    - "Hafen-bewusst gruppiert" (der ursprüngliche erste Startpunkt): 0
+      von 40 Fällen betroffen, 0 Verlust - VOLLSTÄNDIG REDUNDANT
+      geworden. Nachvollziehbar: sowohl die gesamtkosten-bewusste
+      Gruppierung als auch die alternierende Neu-Gruppierung sind im
+      Kern verfeinerte Versionen derselben Idee - kombiniert mit dem
+      Tausch-Zug erreichen sie alles, was die einfache Version je fand.
+      DESHALB ENTFERNT als eigener Ausgangspunkt für die
+      Verbesserungssuche (spart einen vollen _improve_from_baseline-
+      Aufruf, ~20 % Rechenzeit) - die Gruppierung selbst bleibt aber
+      erhalten, da die alternierende Neu-Gruppierung weiterhin davon
+      ausgeht.
+    - "Blind gepackt": 16 von 40 Fällen betroffen, ~10.700
+      Kosteneinheiten Verlust - klar UNVERZICHTBAR, mit Abstand der
+      wichtigste Startpunkt. Strukturell fundamental anders als alle
+      anderen vier (die alle irgendeine Form von Hafen-Gruppierung
+      nutzen) - der Tausch-Zug kann diese strukturelle Lücke nicht
+      schließen.
+    - "monobeam_construction": nur 1 von 40 Fällen betroffen, ~340
+      Kosteneinheiten Verlust - kleiner, aber echter Nutzen. BEHALTEN
+      (auf Nutzerwunsch, trotz geringem Effekt).
+    - "gesamtkosten-bewusst" und "alternierend neu gruppiert": 3 bzw. 6
+      von 40 Fällen betroffen, ~850 bzw. ~1.300 Kosteneinheiten Verlust -
+      beide behalten, tragen weiterhin spürbar bei.
+
+    Lehre: nicht jede nachweislich hilfreiche Ergänzung bleibt hilfreich,
+    wenn spätere Ergänzungen (hier: der Tausch-Zug) einen Teil ihres
+    Wirkungsbereichs mit abdecken - ein Startpunkt sollte nach jeder
+    größeren Suchverbesserung erneut auf seinen GRENZNUTZEN geprüft
+    werden, nicht nur einmalig beim eigenen Einbau."""
     n = len(item_sizes)
     if n == 0:
         return []
@@ -486,7 +723,10 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
     if max_rounds is None:
         max_rounds = 3
 
-    # Ausgangslösung 1: Hafen-bewusst gruppiert
+    # Hafen-bewusste Gruppierung: wird NICHT mehr direkt als eigene
+    # Ausgangslösung für die Verbesserungssuche verwendet (siehe unten,
+    # Ablationsstudie) - aber weiterhin als Grundlage für die alternierende
+    # Neu-Gruppierung (Ausgangslösung 4) gebraucht.
     n_regions = road_cost.shape[0]
     best_port_per_region = np.argmin(road_cost, axis=1)
     groups = defaultdict(list)
@@ -498,11 +738,11 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
     for _preferred_port, idxs in groups.items():
         aware_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
 
-    # Ausgangslösung 2: Blind gepackt (dieselbe Grundlage wie
+    # Ausgangslösung 1: Blind gepackt (dieselbe Grundlage wie
     # blind_packing_construction - reine Groessen-FFD ohne Gruppierung)
     blind_containers = _ffd_pack(list(range(n)), item_sizes, capacity)
 
-    # Ausgangslösung 3: monobeam_construction (eigenständige, unabhängige
+    # Ausgangslösung 2: monobeam_construction (eigenständige, unabhängige
     # Beam-Search-Konstruktion, siehe README - liefert manchmal eine
     # strukturell andere Gruppierung, von der aus die Verbesserungssuche
     # Lösungen findet, die weder von "Blind" noch von "Hafen-bewusst" aus
@@ -518,11 +758,23 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
     mono_assignments = monobeam_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=mono_construction_width, grouped=True)
     mono_containers = [a["items"] for a in mono_assignments]
 
-    best_from_aware = _improve_from_baseline(aware_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
+    # Ausgangslösung 3: gesamtkosten-bewusst gruppiert (siehe
+    # _total_cost_aware_port_preference und Docstring oben, Fund 2)
+    tca_containers = _total_cost_aware_port_preference(item_sizes, item_regions, capacity, road_cost, sea_freight)
+
+    # Ausgangslösung 4: alternierende Neu-Gruppierung ab der Hafen-
+    # bewussten Ausgangslösung (siehe _alternating_regroup und Docstring
+    # oben, Fund 3)
+    alt_containers = _alternating_regroup(aware_containers, item_sizes, item_regions, capacity, road_cost, sea_freight)
+
     best_from_blind = _improve_from_baseline(blind_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
     best_from_mono = _improve_from_baseline(mono_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
+    best_from_tca = _improve_from_baseline(tca_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
+    best_from_alt = _improve_from_baseline(alt_containers, item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width, max_rounds)
 
-    best_containers, _best_score = min([best_from_aware, best_from_blind, best_from_mono], key=lambda t: t[1])
+    best_containers, _best_score = min(
+        [best_from_blind, best_from_mono, best_from_tca, best_from_alt], key=lambda t: t[1],
+    )
 
     assignments = []
     for items in best_containers:
