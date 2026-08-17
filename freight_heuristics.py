@@ -788,7 +788,10 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
     vieler Kandidatenfolgen. Da eine breitere Suche nach Runde 1 aber sehr
     viel teurer wird (der Beam facht sich auf bis zu `beam_width` Zustände
     auf, jeder wird in der nächsten Runde vollständig neu durchsucht),
-    ist der Standard bewusst klein gewählt.
+    wurde dieser Befund später (siehe zehnter Fund unten) noch weiter
+    verfolgt und der Beam-Breite-Regler ganz entfernt - `beam_width` ist
+    seither fest auf 1 gesetzt, nicht mehr nur "klein gewählt" aus einer
+    für Nutzer wählbaren Spanne.
 
     DREI WEITERE ERGÄNZUNGEN nach Literaturrecherche zum zugrundeliegenden
     Problem (Jost et al., "Partitioned vs. Integrated Planning of

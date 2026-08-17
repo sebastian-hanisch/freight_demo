@@ -905,6 +905,24 @@ Test und Referenz.
 `test_flexible_beam_width_scaling_quality_is_similar`,
 `test_flexible_beam_actual_default_worst_case_completes_within_budget`.
 
+## Auf Nutzerhinweis behoben: Metrik-Deltas hatten die falsche Farbe
+
+Derselbe Fund wie in der VRP-Demo (dort zuerst entdeckt, hier direkt mitgeprüft):
+Streamlit färbt `st.metric`-Deltas standardmäßig so, als wäre "höher besser"
+(positiv=grün, negativ=rot) - bei Kosten ist aber "weniger besser". Zwei Stellen
+betroffen: die Hauptkennzahl "Gesamtkosten" zeigte eine Einsparung ("-500 € ggü.
+Alternative") fälschlich in ROT, und die "Ausgeglichen"-Alternative im
+"Alternative Lösungen"-Bereich zeigte einen Kostenaufschlag ("+500 €") fälschlich
+in GRÜN - also in beiden Fällen genau verkehrt herum.
+
+**Fix:** `delta_color="inverse"` an beiden Stellen ergänzt (Streamlits eigene
+Dokumentation: "useful when a negative change is considered good, like a decrease
+in cost"). Mit Regressionstest direkt gegen das Metric-Proto abgesichert (prüft
+sowohl den grünen Einsparungs- als auch den roten Mehrkosten-Fall), nicht nur
+gegen den übergebenen Parameter.
+
+`test_cost_metrics_use_inverse_delta_color`.
+
 ## 2. Tests ausführen
 
 ```bash

@@ -1377,3 +1377,37 @@ def test_alternative_solutions_section_renders():
     assert "Ausgeglichenere Container" in markdowns
     labels = [d.label for d in at.download_button]
     assert any("ausgeglichen" in l for l in labels), "PDF-Download für die ausgeglichene Lösung fehlt"
+
+
+def test_cost_metrics_use_inverse_delta_color():
+    """Regressionstest für einen gefundenen UI-Fehler (auf Nutzerhinweis,
+    identischer Fund wie in der VRP-Demo): Streamlit färbt Metrik-Deltas
+    standardmäßig so, als wäre "höher besser" (positiv=grün, negativ=rot) -
+    bei Kosten ist aber "weniger besser". Ohne delta_color="inverse" wurden
+    Einsparungen (negative Deltas wie "-500 € ggü. Alternative") fälschlich
+    ROT dargestellt, und ein Kostenaufschlag (positives Delta bei der
+    ausgeglichenen Alternative) fälschlich GRÜN. Fix: delta_color explizit
+    auf "inverse" gesetzt. Prüft direkt gegen das Metric-Proto, dass negative
+    Deltas (Einsparungen) grün UND positive Deltas (Mehrkosten) rot sind -
+    nicht nur dass delta_color korrekt übergeben wurde."""
+    from streamlit.proto.Metric_pb2 import Metric
+
+    at = fresh_app()
+    assert_ok(at)
+    n_green_checked, n_red_checked = 0, 0
+    for m in at.metric:
+        delta = m.proto.delta
+        if delta and delta.startswith("-"):
+            assert m.proto.color == Metric.MetricColor.GREEN, (
+                f"'{m.proto.label}': negatives Delta ({delta!r}, Einsparung) sollte grün sein, "
+                f"ist aber {Metric.MetricColor.Name(m.proto.color)}"
+            )
+            n_green_checked += 1
+        elif delta and delta.startswith("+") and not delta.startswith("+0"):
+            assert m.proto.color == Metric.MetricColor.RED, (
+                f"'{m.proto.label}': positives Delta ({delta!r}, Mehrkosten) sollte rot sein, "
+                f"ist aber {Metric.MetricColor.Name(m.proto.color)}"
+            )
+            n_red_checked += 1
+    assert n_green_checked >= 1, f"Erwartete mindestens 1 Metrik mit negativem (grünem) Delta, gefunden: {n_green_checked}"
+    assert n_red_checked >= 1, f"Erwartete mindestens 1 Metrik mit positivem (rotem) Delta, gefunden: {n_red_checked}"

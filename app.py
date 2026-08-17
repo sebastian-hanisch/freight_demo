@@ -170,7 +170,7 @@ cost_saved = baseline["total_cost"] - best["total_cost"]
 pct_saved = (cost_saved / baseline["total_cost"] * 100) if baseline["total_cost"] > 0 else 0.0
 
 m1, m2, m3 = st.columns(3)
-m1.metric("Gesamtkosten", f"{best['total_cost']:.0f} €", delta=f"-{cost_saved:.0f} € ggü. Alternative")
+m1.metric("Gesamtkosten", f"{best['total_cost']:.0f} €", delta=f"-{cost_saved:.0f} € ggü. Alternative", delta_color="inverse")
 m2.metric("davon Seefracht", f"{best['sea_cost_total']:.0f} €")
 m3.metric("Container genutzt", f"{best['n_containers']}")
 
@@ -243,7 +243,7 @@ with alt_col2:
         )
     bc1, bc2 = st.columns(2)
     bc1.metric("Kostenoptimal", f"{stats_beam_alt['total_cost']:.0f} €")
-    bc2.metric("Ausgeglichen", f"{stats_balanced['total_cost']:.0f} €", delta=f"+{extra_cost_balanced:.0f} €")
+    bc2.metric("Ausgeglichen", f"{stats_balanced['total_cost']:.0f} €", delta=f"+{extra_cost_balanced:.0f} €", delta_color="inverse")
 
 with st.expander("📍 Karte der ausgeglichenen Lösung", expanded=False):
     fig_balanced = build_freight_map(port_coords, region_coords, balanced_assignments, item_regions, item_sizes)
