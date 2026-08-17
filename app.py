@@ -24,7 +24,7 @@ import streamlit as st
 from freight_data import generate_freight_scenario
 from freight_evaluation import evaluate_assignment
 from freight_feedback import log_feedback
-from freight_heuristics import blind_packing_construction, flexible_beam_search_construction, port_aware_construction
+from freight_heuristics import balance_containers, blind_packing_construction, flexible_beam_search_construction, port_aware_construction, port_consolidation_frontier
 from freight_pdf_export import generate_consolidation_plan_pdf
 from freight_presets import apply_preset, bounds, init_session_state_defaults, load_permalink_settings, randomize_seed, sync_query_params
 from freight_ui_panel import render_freight_panel
@@ -88,10 +88,6 @@ with st.sidebar:
         "Preisunterschied zwischen Häfen", *bounds("sea_spread_slider"), step=0.05, key="sea_spread_slider",
         help="0 = alle Häfen gleich teuer, höhere Werte = größere Schwankung.",
     )
-    beam_width = st.slider(
-        "Beam-Breite", *bounds("beam_width_slider"), key="beam_width_slider",
-        help="Anzahl parallel verfolgter Verbesserungsvarianten, während Beam Search gezielt nach lohnenden Hafen-Wechseln und Packstück-Tauschen sucht (nicht nur Packreihenfolgen). Der Kernteil vor der abschließenden Politur ist nachweislich nie schlechter bei größerer Breite (siehe README) - durch die Politur danach kann sich das in seltenen Fällen geringfügig ändern. Bei diesem Suchtyp bringt mehr Breite kaum zusätzliche Qualität, aber deutlich mehr Rechenzeit - deshalb bewusst eng begrenzt.",
-    )
     seed = st.number_input("Zufalls-Seed", step=1, key="seed_input")
 
     st.button(
@@ -100,7 +96,7 @@ with st.sidebar:
         "praktisch, ohne selbst eine neue Seed-Zahl eintippen zu müssen.",
     )
 
-sync_query_params(n_items, n_regions, n_ports, capacity, sea_freight, sea_spread, seed, beam_width)
+sync_query_params(n_items, n_regions, n_ports, capacity, sea_freight, sea_spread, seed)
 
 if "force_regen" not in st.session_state:
     st.session_state.force_regen = False
@@ -143,7 +139,14 @@ with st.expander("📦 Packstücke (Zusammenfassung)"):
 
 blind_assignments = blind_packing_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
 aware_assignments = port_aware_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
-beam_assignments = flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr, beam_width=beam_width)
+beam_assignments = flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
+
+# Alternative Loesungen (auf Nutzerwunsch ergaenzt, siehe README): zwei
+# geschaeftlich motivierte Alternativen zur reinen Kostenoptimierung,
+# beide ausgehend von der bereits kostenoptimalen Loesung.
+beam_containers_for_alt = [a["items"] for a in beam_assignments]
+port_frontier = port_consolidation_frontier(beam_containers_for_alt, item_regions, item_sizes, road_cost, sea_freight_arr)
+balanced_assignments = balance_containers(beam_containers_for_alt, item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
 
 stats_blind = evaluate_assignment(blind_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
 stats_aware = evaluate_assignment(aware_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
@@ -188,6 +191,68 @@ st.download_button(
 )
 
 st.caption("Ermittelt mit der bei diesem Kostenverhältnis günstigsten von drei eigenen Methoden. Details unten.")
+
+st.markdown("---")
+
+st.markdown("## 🔀 Alternative Lösungen")
+st.caption(
+    "Die kostenoptimale Lösung ist nicht immer die praktikabelste - manchmal lohnt sich ein kleiner "
+    "Kostenaufschlag für einfachere Abwicklung. Beide Alternativen gehen von der oben gezeigten "
+    "kostenoptimalen Lösung aus."
+)
+
+alt_col1, alt_col2 = st.columns(2)
+
+with alt_col1:
+    st.markdown("#### 📉 Was kostet Konsolidierung auf wenige Häfen?")
+    st.caption(
+        "Weniger Häfen bedeutet oft weniger Spediteure/Ansprechpartner und mehr Verhandlungsmacht "
+        "bei einem Anbieter - hier die Kosten, wenn nur die k günstigsten Häfen zusammen genutzt "
+        "werden dürfen (bei sonst unveränderter Packung)."
+    )
+    frontier_rows = []
+    unrestricted_cost = port_frontier[len(sea_freight_arr)][0]
+    for k in sorted(port_frontier):
+        cost, subset = port_frontier[k]
+        extra_pct = (cost - unrestricted_cost) / unrestricted_cost * 100 if unrestricted_cost > 0 else 0.0
+        frontier_rows.append({
+            "Häfen erlaubt": k,
+            "Kosten": f"{cost:.0f} €",
+            "Aufschlag ggü. frei": f"+{extra_pct:.1f}%" if extra_pct > 0.05 else "optimal",
+        })
+    st.dataframe(pd.DataFrame(frontier_rows), use_container_width=True, hide_index=True)
+
+with alt_col2:
+    st.markdown("#### ⚖️ Ausgeglichenere Container")
+    stats_beam_alt = evaluate_assignment(beam_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
+    stats_balanced = evaluate_assignment(balanced_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
+    fill_beam = [sum(item_sizes[i] for i in a["items"]) / capacity * 100 for a in beam_assignments if a["items"]]
+    fill_balanced = [sum(item_sizes[i] for i in a["items"]) / capacity * 100 for a in balanced_assignments if a["items"]]
+    extra_cost_balanced = stats_balanced["total_cost"] - stats_beam_alt["total_cost"]
+    extra_pct_balanced = (extra_cost_balanced / stats_beam_alt["total_cost"] * 100) if stats_beam_alt["total_cost"] > 0 else 0.0
+    if fill_beam and fill_balanced:
+        # Regler-Minimum ist aktuell 10 Packstuecke, dieser Fall ist ueber
+        # die UI nicht erreichbar - Schutz trotzdem ergaenzt, falls sich
+        # das Minimum je aendert oder die Funktionen direkt (nicht ueber
+        # die App) mit 0 Packstuecken aufgerufen werden.
+        st.caption(
+            f"Gleichmäßigere Auslastung kann Handling planbarer machen und einzelne, fast randvolle "
+            f"Container als Risiko vermeiden. Füllgrad-Spanne: {min(fill_beam):.0f}-{max(fill_beam):.0f}% → "
+            f"{min(fill_balanced):.0f}-{max(fill_balanced):.0f}%, bei "
+            f"{'+' if extra_cost_balanced >= 0 else ''}{extra_pct_balanced:.1f}% Kosten."
+        )
+    bc1, bc2 = st.columns(2)
+    bc1.metric("Kostenoptimal", f"{stats_beam_alt['total_cost']:.0f} €")
+    bc2.metric("Ausgeglichen", f"{stats_balanced['total_cost']:.0f} €", delta=f"+{extra_cost_balanced:.0f} €")
+
+with st.expander("📍 Karte der ausgeglichenen Lösung", expanded=False):
+    fig_balanced = build_freight_map(port_coords, region_coords, balanced_assignments, item_regions, item_sizes)
+    st.plotly_chart(fig_balanced, use_container_width=True, key="balanced_plot")
+    pdf_bytes_balanced = generate_consolidation_plan_pdf("Ausgeglichene Container", balanced_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
+    st.download_button(
+        "📄 Konsolidierungsplan (ausgeglichen) als PDF herunterladen", data=pdf_bytes_balanced,
+        file_name="konsolidierungsplan_ausgeglichen.pdf", mime="application/pdf", key="balanced_pdf_download",
+    )
 
 st.markdown("---")
 
@@ -289,6 +354,16 @@ immer; bei sehr hoher Seefracht kann blindes Packen trotz schlechterer Hafenwahl
 sein, weil es mit weniger Containern auskommt. Probieren Sie den Regler "Seefracht je
 Container" aus, um das selbst zu sehen - alle drei Methoden werden bei jeder Einstellung
 neu gerechnet, welche gewinnt wird nicht angenommen.
+
+**Alternative Lösungen:** Die kostenoptimale Lösung ist nicht immer die praktikabelste.
+Die Häfen-Konsolidierungs-Kurve zeigt, was eine Beschränkung auf wenige Häfen kostet (bei
+fester Packung, nur die Hafenwahl je Container variiert über alle Teilmengen erlaubter
+Häfen) - relevant, wenn weniger Spediteure/Ansprechpartner oder mehr Verhandlungsmacht bei
+einem Anbieter den Aufpreis wert sind. Die ausgeglichene Alternative sucht mit demselben
+Tausch-Mechanismus wie oben, aber mit einer anderen Zielfunktion (Streuung der
+Container-Füllgrade statt Kosten) - erlaubt dabei einen kleinen Kostenaufschlag (bis 5 %),
+um echte Balance-Verbesserungen zu finden statt bei der ersten Kostensteigerung
+abzubrechen.
 
 **In echten Projekten** kämen meist weitere Nebenbedingungen dazu (Gewichtsgrenzen,
 gefährliche Güter, feste Abfahrtstermine je Hafen, mehrstufige Transportketten) - das

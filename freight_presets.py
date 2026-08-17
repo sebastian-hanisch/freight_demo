@@ -36,7 +36,6 @@ SETTING_SPECS = {
     "capacity_slider": SettingSpec("cap", float, DEFAULT_CONTAINER_CAPACITY, 30.0, 300.0),
     "sea_freight_slider": SettingSpec("sea", float, DEFAULT_SEA_FREIGHT_BASE, 200.0, 4000.0),
     "sea_spread_slider": SettingSpec("spread", float, DEFAULT_SEA_FREIGHT_SPREAD, 0.0, 0.8),
-    "beam_width_slider": SettingSpec("beam", int, 2, 1, 6),
     "seed_input": SettingSpec("seed", int, 42, 0, 2_000_000_000),
 }
 
@@ -46,14 +45,13 @@ def bounds(state_key):
     return spec.lo, spec.hi
 
 
-def apply_preset(n_items_val, n_regions_val, n_ports_val, capacity_val, sea_freight_val, sea_spread_val, seed_val, beam_width_val=2):
+def apply_preset(n_items_val, n_regions_val, n_ports_val, capacity_val, sea_freight_val, sea_spread_val, seed_val):
     st.session_state["n_items_slider"] = n_items_val
     st.session_state["n_regions_slider"] = n_regions_val
     st.session_state["n_ports_slider"] = n_ports_val
     st.session_state["capacity_slider"] = capacity_val
     st.session_state["sea_freight_slider"] = sea_freight_val
     st.session_state["sea_spread_slider"] = sea_spread_val
-    st.session_state["beam_width_slider"] = beam_width_val
     st.session_state["seed_input"] = seed_val
     st.session_state["force_regen"] = True
 
@@ -104,7 +102,7 @@ def init_session_state_defaults():
             st.session_state[state_key] = spec.default
 
 
-def sync_query_params(n_items, n_regions, n_ports, capacity, sea_freight, sea_spread, seed, beam_width):
+def sync_query_params(n_items, n_regions, n_ports, capacity, sea_freight, sea_spread, seed):
     try:
         st.query_params["n_items"] = str(n_items)
         st.query_params["n_regions"] = str(n_regions)
@@ -112,7 +110,6 @@ def sync_query_params(n_items, n_regions, n_ports, capacity, sea_freight, sea_sp
         st.query_params["cap"] = str(capacity)
         st.query_params["sea"] = str(sea_freight)
         st.query_params["spread"] = str(sea_spread)
-        st.query_params["beam"] = str(beam_width)
         st.query_params["seed"] = str(int(seed))
     except Exception:
         pass

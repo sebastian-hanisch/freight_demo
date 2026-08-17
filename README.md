@@ -743,6 +743,71 @@ mit echtem Sicherheitsabstand auf 5s angehoben.
 `test_flexible_beam_full_pipeline_mostly_monotone_in_beam_width`,
 `test_swap_move_contributes_within_the_pipeline`.
 
+## Neues Feature: Quality-Diversity statt nur einer Lösung
+
+Auf Nutzerfrage untersucht: Kenneth Stanleys Novelty Search bzw. deren spätere
+Weiterentwicklung Quality-Diversity (v. a. MAP-Elites) - lässt sich das sinnvoll
+einbauen? Erst als reine Optimierungsverbesserung getestet (ein Archiv über
+diskretisierte Verhaltens-Zellen statt nur eines Elite-Individuums, Eltern aus dem
+gesamten Archiv statt nur der Population gezogen), sowohl für VRPs genetischen
+Algorithmus als auch für dieses LNS. Ergebnis: bei VRP nur ein bescheidener, uneinheitlicher
+Effekt (7 von 20 Testfällen besser, 5 schlechter, Netto nur +28 Einheiten Ersparnis).
+Bei diesem LNS sogar negativ (0 von 40 Fällen besser, Netto -164) - das bestehende LNS
+baut bereits fortlaufend auf seinem letzten Zustand auf, ein zufällig aus einem
+Diversitäts-Archiv gezogener "veralteter" Startpunkt verschwendet bei nur wenigen
+Iterationen eher Suchtiefe. Nachvollziehbar: unsere Zielfunktionen (Kosten, Distanz)
+sind nicht "deceptive" wie Stanleys klassisches Labyrinth-Beispiel - reine
+Diversitäts-Erzwingung hilft da kaum.
+
+**Aber:** die eigentlich interessante Idee war nie die Optimierung selbst, sondern das
+Feature dahinter - statt einer Zahl mehrere strukturell unterschiedliche, aber jeweils
+gute Lösungen zu zeigen. Umgesetzt mit zwei GESCHÄFTLICH motivierten Alternativen statt
+abstrakter Verhaltens-Vielfalt:
+
+### 1. Häfen-Konsolidierungs-Kurve
+
+`port_consolidation_frontier` in `freight_heuristics.py`: für jede Anzahl k=1..n_ports
+erlaubter Häfen wird die günstigste Kombination von genau k Häfen berechnet - bei
+FESTER Packung (keine Neu-Konstruktion), nur welcher Hafen je Container gewählt wird,
+variiert. Ergebnis: eine "was kostet mich Konsolidierung"-Kurve, geschäftlich direkt
+motiviert (weniger Häfen = weniger Spediteure/Ansprechpartner, mehr Verhandlungsmacht
+bei einem Anbieter, ggf. Mengenrabatte).
+
+Empirisch oft ein echter, interessanter Kompromiss: bei einer Testinstanz kostete die
+Beschränkung auf nur 1 Hafen 45 % mehr als die freie Wahl, mit 2 Häfen nur noch 19 %
+mehr, ab 3 Häfen kein Unterschied mehr zur vollen Flexibilität. Sehr günstig zu
+berechnen (bei bis zu 5 Häfen, der App-Obergrenze, höchstens 2⁵=32 Teilmengen zu prüfen -
+~3ms bei 100 Packstücken).
+
+### 2. Ausgeglichenere Container
+
+`balance_containers` in `freight_heuristics.py`: eine lokale Tausch-Suche (derselbe
+Tausch-Zug-Mechanismus wie in `_improve_from_baseline`, aber mit einer ANDEREN
+Zielfunktion - Streuung der Container-Füllgrade statt Kosten), die eine Kostenerhöhung
+bis zu einer Toleranz (Standard 5 %) gegenüber der Kosten-optimalen Lösung zulässt, um
+echte Balance-Verbesserungen zu finden. Geschäftlich motiviert: gleichmäßigere
+Auslastung kann Handling planbarer machen und einzelne, fast randvolle Container als
+Risiko-Nadelöhr vermeiden.
+
+Empirisch über 40 Testfälle verifiziert: in 65 % der Fälle eine deutliche Verbesserung
+(>30 % weniger Streuung) bei im Schnitt nur ~1 % Kostenaufschlag (Maximum ~3 %) - in
+den übrigen Fällen war die Kosten-optimale Ausgangslösung bereits gut ausbalanciert,
+keine Verschlechterung in diesen Fällen.
+
+### Umsetzung in der App
+
+Ein neuer, eigenständiger Bereich "🔀 Alternative Lösungen" direkt nach der
+Hauptlösung (nicht im Methodenvergleich versteckt, da es konzeptionell etwas anderes
+ist - nicht "welche Konstruktionsmethode ist besser", sondern "welche unterschiedlichen
+guten Lösungen gibt es für unterschiedliche Prioritäten"): links die
+Konsolidierungs-Tabelle, rechts die ausgeglichene Alternative mit eigener Karte und
+PDF-Export.
+
+`test_port_consolidation_frontier_covers_all_stops_and_is_monotone_improving`,
+`test_balance_containers_never_loses_items_and_respects_cost_tolerance`,
+`test_balance_containers_generally_reduces_fill_variance`,
+`test_alternative_solutions_section_renders`.
+
 ## 1. Lokal ausführen
 
 ```bash
@@ -752,6 +817,93 @@ source venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## Auf Nutzerwunsch: allgemeine Codeüberprüfung nach den letzten Ergänzungen
+
+Nach den zahlreichen Ergänzungen in dieser Sitzung (LNS, mehrfache Ablationsrunden,
+Alternative Lösungen) ein systematischer Durchgang: Lint/toter Code, Randfälle,
+Performance-Stresstests, vollständige Durchsicht aller Module. Zwei echte Funde:
+
+**1. Bug im PDF-Export bei vielen Containern:** Bei kleiner Kapazität und vielen
+Packstücken (real über die App erreichbar - Kapazitäts-Regler-Minimum 30, bis zu 100
+Packstücke ergeben ~65 Container) reicht eine PDF-Seite nicht mehr.
+`set_auto_page_break` löst dann automatisch einen Seitenumbruch aus, wiederholte aber
+NICHT die Tabellenkopfzeile - Folgeseiten zeigten unbeschriftete Zahlenspalten ohne
+Kontext, welche Spalte was bedeutet. Fix: Y-Position vor jeder Zeile prüfen, bei
+drohendem Seitenumbruch manuell umbrechen und Kopfzeile neu zeichnen. Verifiziert mit
+`pdftotext`/`pdfinfo`: Kopfzeile erscheint jetzt auf jeder Seite, alle Zeilen bleiben
+erhalten (65 von 65 bei einem erzwungenen Zwei-Seiten-Testfall).
+`test_generate_consolidation_plan_pdf_repeats_header_on_every_page`.
+
+**2. Latenter Absturz-Risiko in der "Alternative Lösungen"-Sektion:** `min()`/`max()`
+auf einer potenziell leeren Füllgrad-Liste, falls `beam_assignments` je leer wäre (0
+Packstücke). Über die App aktuell nicht erreichbar (Packstück-Regler-Minimum ist 10),
+aber als Schutz trotzdem ergänzt, falls sich das Minimum je ändert oder die Funktionen
+direkt (nicht über die App) mit 0 Packstücken aufgerufen werden - Grundsatz aus dem
+gesamten Projekt: defensiv gegen Randfälle programmieren, auch wenn sie aktuell nicht
+über die UI erreichbar sind.
+
+**Dazu eine Dokumentationslücke geschlossen:** der "Wie funktioniert diese Demo?"-Bereich
+erwähnte das neue "Alternative Lösungen"-Feature noch gar nicht - ergänzt.
+
+**Sonst nichts gefunden:** kein toter Code, alle Randfälle (0/1 Packstücke, alles passt
+in einen Container, sehr viele kleine Container) korrekt behandelt, Performance bei
+allen real erreichbaren Extremeinstellungen deutlich innerhalb des Budgets (~1,6s bei
+Kapazität 30 und 100 Packstücken, inklusive beider neuer Alternative-Lösungen-Funktionen).
+Dedizierter Performance-Test dafür ergänzt (`test_alternative_solutions_worst_case_completes_within_budget`),
+da bisher nur `flexible_beam_search_construction` allein einen solchen Test hatte.
+
+## Zehnter Fund: der Beam-Breite-Regler wurde entfernt
+
+Auf Nutzerbeobachtung ("in einigen Beispielen scheint die Beam-Breite nichts zu
+bringen - Zufall, oder Folge der vielen Änderungen?") systematisch untersucht.
+**Bestätigt: kein Zufall.** Dieselbe Art Befund wie bei den mehrfach redundant
+gewordenen Startlösungen (siehe oben) - nur diesmal betrifft es die Suchbreite selbst.
+
+**Die Kette, empirisch nachvollzogen:**
+
+| Ebene | Effekt von Breite 1→6 |
+|---|---|
+| Ein Startpunkt, nur Tausch-Zug, ohne LNS | Bereits in 40 % der Fälle exakt null Unterschied |
+| Ensemble (alle Startpunkte, vor LNS) | Ø nur 25 Kosteneinheiten, meist 0 |
+| Volle Pipeline (mit LNS danach) | Ø nur 13 Kosteneinheiten - LNS radiert nochmal die Hälfte weg |
+
+Der Grund: der Tausch-Zug in `_improve_from_baseline` prüft in Runde 1 bereits
+erschöpfend jedes Packstück-Paar über jedes Container-Paar hinweg und findet dadurch
+meist schon das lokale Optimum vom jeweiligen Startpunkt aus - die "Zweitbesten"
+Kandidaten, die bei größerer Breite zusätzlich weiterverfolgt werden, führen in den
+Folgerunden (nur noch Verschieben/Abspalten) selten zu einem anderen Ziel. LNS
+danach reduziert den verbleibenden Rest weiter.
+
+**Dazu kommt: breitere Suche kostet spürbar mehr Zeit, ohne den Gegenwert.** Bei
+100 Packstücken: 382ms (Breite 1) vs. 653ms (Breite 6) - 71 % mehr Rechenzeit für
+praktisch nichts.
+
+**Umgesetzt (auf Nutzerwunsch):** der Beam-Breite-Regler wurde komplett aus der App
+entfernt (`SETTING_SPECS`, `apply_preset`, `sync_query_params` entsprechend bereinigt).
+`flexible_beam_search_construction` und `_ensemble_best_result` nutzen jetzt intern
+fest `beam_width=1` (Standardwert der Funktionssignatur geändert) - der schnellste
+Wert ohne messbare Qualitätseinbuße. Der `beam_width`-**Parameter** bleibt in den
+Funktionen selbst erhalten (mehrere Tests verifizieren die verbleibende, wenn auch
+geringe Monotonie-Eigenschaft direkt und brauchen ihn deshalb weiterhin), nur der
+UI-Regler ist weg.
+
+**Ergebnis:** Rechenzeit bei der App-Obergrenze (100 Packstücke, Kapazität 30) sank
+von ~1,5-1,6s (vorheriger fester Wert 2) auf ~502ms - rund 3x schneller, ganz ohne
+Qualitätsverlust.
+
+Ein Test musste dabei korrigiert werden, der selbst einen (unentdeckten) Fehler
+enthielt: `test_flexible_beam_never_worse_than_these_reference_methods` verglich das
+Ensemble-Ergebnis (jetzt mit dem neuen Standard `beam_width=1`) gegen eine
+Referenzberechnung, die weiterhin fest `beam_width=2` nutzte - ein unfairer
+Vergleich, der die breitere Referenzsuche gelegentlich einen zufällig besseren
+lokalen Optimum finden ließ als die tatsächlich genutzte, schmalere Suche. Kein
+Fehler in `flexible_beam_search_construction` selbst, sondern ein Artefakt
+unterschiedlicher Vergleichsbreiten im Test - behoben durch konsistente Breite in
+Test und Referenz.
+
+`test_flexible_beam_width_scaling_quality_is_similar`,
+`test_flexible_beam_actual_default_worst_case_completes_within_budget`.
 
 ## 2. Tests ausführen
 

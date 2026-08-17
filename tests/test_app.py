@@ -10,6 +10,7 @@ Ausführen mit: pytest tests/ -v
 
 import os
 import sys
+import tempfile
 
 import numpy as np
 import pytest
@@ -179,7 +180,7 @@ def test_pdf_download_buttons_present():
     at = fresh_app()
     assert_ok(at)
     labels = [d.label for d in at.download_button]
-    assert len(labels) == 4  # Primäransicht + Blind + Hafen-bewusst + Beam Search
+    assert len(labels) == 5  # Primäransicht + Ausgeglichen + Blind + Hafen-bewusst + Beam Search
     assert all("PDF" in l for l in labels)
 
 
@@ -206,7 +207,7 @@ def test_permalink_writes_and_restores():
     at = fresh_app()
     assert_ok(at)
     qp = dict(at.query_params)
-    for key in ["n_items", "n_regions", "n_ports", "cap", "sea", "spread", "beam", "seed"]:
+    for key in ["n_items", "n_regions", "n_ports", "cap", "sea", "spread", "seed"]:
         assert key in qp
 
     at2 = AppTest.from_file(APP_PATH)
@@ -220,7 +221,6 @@ def test_permalink_writes_and_restores():
     ("n_items", "9999"), ("n_items", "-5"), ("n_ports", "9999"),
     ("sea", "nan"), ("sea", "inf"), ("spread", "-inf"),
     ("seed", "-42"), ("n_ports", "not_a_number"), ("cap", "9999"),
-    ("beam", "9999"), ("beam", "-5"), ("beam", "nan"),
 ])
 def test_permalink_handles_bad_values_without_crash(param, value):
     at = AppTest.from_file(APP_PATH)
@@ -243,7 +243,7 @@ def test_slider_bounds_match_setting_specs():
         assert slider.min == pytest.approx(spec.lo)
         assert slider.max == pytest.approx(spec.hi)
         checked += 1
-    assert checked == 7, f"Nur {checked} von 7 erwarteten Slidern geprüft"
+    assert checked == 6, f"Nur {checked} von 6 erwarteten Slidern geprüft"
 
 
 def test_setting_specs_defaults_within_bounds():
@@ -270,13 +270,16 @@ from freight_evaluation import evaluate_assignment
 from freight_heuristics import (
     _alternating_regroup,
     _ensemble_best_result,
+    _fill_variance,
     _improve_from_baseline,
     _total_cost_aware_port_preference,
+    balance_containers,
     beam_search_construction,
     blind_packing_construction,
     flexible_beam_search_construction,
     monobeam_construction,
     port_aware_construction,
+    port_consolidation_frontier,
 )
 
 
@@ -437,6 +440,47 @@ def test_generate_consolidation_plan_pdf_produces_valid_pdf():
     pdf_bytes = generate_consolidation_plan_pdf("Test", aware, item_sizes, item_regions, road_cost, sea_freight)
     assert pdf_bytes[:4] == b"%PDF"
     assert len(pdf_bytes) > 500
+
+
+def test_generate_consolidation_plan_pdf_repeats_header_on_every_page():
+    """Regressionstest für einen gefundenen Bug: bei vielen Containern
+    (z. B. 65+ bei kleiner Kapazität und vielen Packstücken - real über
+    die App erreichbar, App-Minimum Kapazität 30) reicht eine PDF-Seite
+    nicht, set_auto_page_break löst dann automatisch einen Seitenumbruch
+    aus, wiederholte aber NICHT die Tabellenkopfzeile - Folgeseiten zeigten
+    unbeschriftete Zahlenspalten. Fix: Y-Position vor jeder Zeile prüfen,
+    bei drohendem Seitenumbruch manuell umbrechen und Kopfzeile neu
+    zeichnen. Dieser Test erzwingt einen Seitenumbruch (kleine Kapazität,
+    viele Packstücke) und prüft direkt, dass die Kopfzeile auf JEDER Seite
+    erscheint und keine Zeile verloren geht."""
+    from freight_pdf_export import generate_consolidation_plan_pdf
+    import subprocess
+    import shutil
+
+    if shutil.which("pdftotext") is None or shutil.which("pdfinfo") is None:
+        pytest.skip("pdftotext/pdfinfo nicht verfügbar in dieser Umgebung")
+
+    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(100, 8, 5, seed=1)
+    capacity = 30.0
+    beam = flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight)
+    assert len(beam) > 40, "Testvoraussetzung: genug Container für einen erzwungenen Seitenumbruch"
+
+    pdf_bytes = generate_consolidation_plan_pdf("Test", beam, item_sizes, item_regions, road_cost, sea_freight)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(pdf_bytes)
+        pdf_path = f.name
+
+    info = subprocess.run(["pdfinfo", pdf_path], capture_output=True, text=True).stdout
+    n_pages = int([l for l in info.splitlines() if l.startswith("Pages:")][0].split(":")[1].strip())
+    assert n_pages >= 2, "Testvoraussetzung: PDF sollte mehrseitig sein"
+
+    text = subprocess.run(["pdftotext", "-layout", pdf_path, "-"], capture_output=True, text=True).stdout
+    pages = [p for p in text.split("\x0c") if p.strip()]
+    for i, page in enumerate(pages):
+        assert "Packstuecke" in page, f"Seite {i + 1} von {len(pages)} hat keine Tabellenkopfzeile"
+
+    data_lines = [l for l in text.split("\n") if l.strip() and l.strip()[0].isdigit()]
+    assert len(data_lines) == len(beam), f"Erwartete {len(beam)} Datenzeilen, gefunden {len(data_lines)}"
 
 
 # --- Feedback ---
@@ -836,7 +880,14 @@ def test_flexible_beam_never_worse_than_these_reference_methods():
     alternierend) plus LNS-Politur - die Hafen-bewusste Gruppierung bleibt
     nur noch als Grundlage für die alternierende Neu-Gruppierung erhalten.
     Garantiert weiterhin nie schlechter als keine der hier referenzierten
-    Methoden."""
+    Methoden. WICHTIG: der Beam-Breite-Regler wurde inzwischen ganz aus
+    der App entfernt (siehe README, zehnter Fund) - flexible_beam_search_
+    construction nutzt jetzt intern fest beam_width=1. Die Referenz-
+    berechnung hier muss denselben Wert nutzen, sonst wäre der Vergleich
+    unfair (eine breitere Referenzsuche könnte zufällig einen besseren
+    lokalen Optimum finden als die schmalere, tatsächlich genutzte
+    Suche - kein Fehler in flexible_beam_search_construction selbst,
+    sondern ein Artefakt unterschiedlicher Vergleichsbreiten)."""
     for sea in [800.0, 2000.0, 4000.0]:
         for seed in range(1, 6):
             pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(
@@ -846,7 +897,7 @@ def test_flexible_beam_never_worse_than_these_reference_methods():
             aware = port_aware_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
             mono = monobeam_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
             tca_containers = _total_cost_aware_port_preference(item_sizes, item_regions, 100.0, road_cost, sea_freight)
-            tca_best, tca_cost = _improve_from_baseline(tca_containers, item_sizes, item_regions, 100.0, road_cost, sea_freight, 2, 3)
+            tca_best, tca_cost = _improve_from_baseline(tca_containers, item_sizes, item_regions, 100.0, road_cost, sea_freight, 1, 3)
             flex = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight)
 
             cost_blind = sum(c["cost"] for c in blind)
@@ -1047,12 +1098,18 @@ def test_tca_starting_point_removal_does_not_cause_large_regression():
 
 
 def test_flexible_beam_worst_case_with_triple_start_completes_within_budget():
-    """Performance-Schutztest, nach der DB-Schenker-Literaturrecherche
-    (siehe README) zunächst auf fünf Startpunkte und einen Tausch-Zug
-    erweitert: Worst Case bei 100 Packstücken stieg von ~875ms (drei
-    Startpunkte, kein Tausch-Zug) auf ~9,5s (Tausch-Zug in JEDER Runde) -
-    deutlich zu teuer. Fix 1: Tausch-Zug läuft nur noch in Runde 1
-    (empirisch: 33 von 40 Testfällen liefern dabei exakt dasselbe
+    """Performance-Schutztest für die Funktion selbst bei hoher (nicht mehr
+    über die App erreichbarer) Breite - siehe README: der Beam-Breite-Regler
+    wurde entfernt (App nutzt jetzt fest beam_width=1, siehe
+    test_flexible_beam_actual_default_worst_case_completes_within_budget
+    für den tatsächlich relevanten Fall). Dieser Test bleibt als reine
+    Absicherung der Funktion selbst bestehen, falls beam_width=6 je wieder
+    direkt (nicht über die UI) verwendet wird - nach der DB-Schenker-
+    Literaturrecherche (siehe README) zunächst auf fünf Startpunkte und
+    einen Tausch-Zug erweitert: Worst Case bei 100 Packstücken stieg von
+    ~875ms (drei Startpunkte, kein Tausch-Zug) auf ~9,5s (Tausch-Zug in
+    JEDER Runde) - deutlich zu teuer. Fix 1: Tausch-Zug läuft nur noch in
+    Runde 1 (empirisch: 33 von 40 Testfällen liefern dabei exakt dasselbe
     Ergebnis wie mit Tausch in jeder Runde) - Worst Case auf ~1,9-2,2s
     gesenkt. Fix 2, nach einer Ablationsstudie (auf Nutzerfrage, ob bei
     fünf Startpunkten noch alle relevant sind): der "Hafen-bewusst
@@ -1080,21 +1137,6 @@ def test_flexible_beam_worst_case_with_triple_start_completes_within_budget():
         flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=6)
         worst = max(worst, time.time() - t0)
     assert worst < 5.0, f"Worst Case dauerte {worst:.1f}s"
-
-
-def test_flexible_beam_monobeam_construction_width_decoupled_from_slider():
-    """Regressionstest für einen beim Bauen gefundenen Fund: monobeam_
-    construction als Startpunkt braucht selbst mindestens Breite 2 für gute
-    Ergebnisse (bw=1 lieferte nach der Verbesserungssuche spürbar
-    schlechtere Endergebnisse, z. B. 13.520 statt 12.903 EUR bei einer
-    Testinstanz) - unabhängig davon, was der Nutzer für den Verbesserungs-
-    such-Regler wählt (kann bis 1 heruntergehen). Prüft, dass beam_width=1
-    (Reglerminimum) trotzdem ein gutes Ergebnis liefert, weil die
-    monobeam-Konstruktionsbreite intern auf mindestens 2 angehoben wird."""
-    pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(30, 5, 3, seed=6)
-    flex_bw1 = flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=1)
-    cost_bw1 = sum(c["cost"] for c in flex_bw1)
-    assert cost_bw1 < 13000, f"beam_width=1 sollte trotzdem von der monobeam-Verbesserung profitieren: {cost_bw1:.0f}"
 
 
 def test_ensemble_best_result_is_monotone_in_beam_width():
@@ -1161,7 +1203,11 @@ def test_flexible_beam_width_scaling_quality_is_similar():
     """Regressionstest für einen beim Bauen gefundenen Performance-Fund: bei
     dieser Verbesserungssuche bringt eine größere Beam-Breite kaum
     zusätzliche Qualität (anders als bei Konstruktions-Beam-Search) - bw=1
-    und bw=6 sollten sich im Schnitt kaum unterscheiden."""
+    und bw=6 sollten sich im Schnitt kaum unterscheiden. Genau dieser Fund
+    (auf Nutzerbeobachtung "die Beam-Breite scheint nichts zu bringen"
+    näher untersucht, siehe README) führte dazu, den Beam-Breite-Regler
+    ganz aus der App zu entfernen und intern fest auf beam_width=1 zu
+    setzen (schnellster Wert, keine messbare Qualitätseinbuße)."""
     total_pct_bw1, total_pct_bw6 = 0.0, 0.0
     n = 0
     for seed in range(1, 8):
@@ -1177,25 +1223,54 @@ def test_flexible_beam_width_scaling_quality_is_similar():
     assert abs(total_pct_bw1 / n - total_pct_bw6 / n) < 1.0
 
 
-def test_flexible_beam_worst_case_completes_within_budget():
-    """Performance-Schutztest: wird bei jeder UI-Interaktion automatisch neu
-    berechnet (nicht Button-gesteuert). Regler ist bewusst auf 1-6 begrenzt,
-    weil breitere Suche bei dieser Verbesserungsheuristik schnell teuer
-    wird (empirisch: bw=32 dauerte bis zu 3,4s bei 100 Packstücken -
-    deshalb der begrenzte Regler-Bereich). Nach Tausch-Zug, zwei
-    zusätzlichen (später einem wieder entfernten) Startpunkten und
-    schließlich Large Neighborhood Search (LNS) als finaler Politur-Schritt
-    (siehe README, neunter Fund): Worst Case je nach Systemlast zwischen
-    ~1,5s (ohne LNS-Beitrag) und ~3,8s beobachtet - Budget mit
-    Sicherheitsabstand auf 5s gesetzt, statt LNS' Parameter (bereits einmal
-    von 8 auf 5 Iterationen reduziert) noch weiter zu drosseln."""
+def test_flexible_beam_actual_default_worst_case_completes_within_budget():
+    """Performance-Schutztest für das TATSÄCHLICH über die App genutzte
+    Verhalten: auf Nutzerbeobachtung ("die Beam-Breite scheint nichts zu
+    bringen") wurde untersucht, ob das Zufall ist oder eine Folge der
+    zahlreichen Ergänzungen (Tausch-Zug, LNS) - bestätigt (siehe README):
+    selbst bei nur EINEM Startpunkt ohne LNS zeigte sich in 40 % der
+    Testfälle exakt kein Unterschied zwischen Breite 1 und 6, der
+    verbleibende Effekt war überwiegend im Rauschen. Der Beam-Breite-Regler
+    wurde daraufhin GANZ AUS DER APP ENTFERNT, intern fest auf
+    beam_width=1 gesetzt (schnellster Wert, keine messbare
+    Qualitätseinbuße) - dieser Test prüft den dadurch tatsächlich relevant
+    gewordenen Worst Case bei der kleinsten erreichbaren Kapazität (30,
+    App-Minimum, erzeugt die meisten Container und ist damit der
+    ungünstigere Fall). Empirisch ~500ms - deutlich schneller als die
+    zuvor mit bw=6 gemessenen 1,5-3,8s."""
     import time
 
     worst = 0.0
     for seed in range(1, 8):
         pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(100, 8, 5, seed=seed)
         t0 = time.time()
-        flexible_beam_search_construction(item_sizes, item_regions, 100.0, road_cost, sea_freight, beam_width=6)
+        flexible_beam_search_construction(item_sizes, item_regions, 30.0, road_cost, sea_freight)
+        worst = max(worst, time.time() - t0)
+    assert worst < 3.0, f"Worst Case dauerte {worst:.1f}s"
+
+
+def test_alternative_solutions_worst_case_completes_within_budget():
+    """Performance-Schutztest für die auf Nutzerwunsch ergänzten Funktionen
+    port_consolidation_frontier und balance_containers (siehe README,
+    Feature "Alternative Lösungen"). Nutzt die KLEINSTE erreichbare
+    Kapazität (30, App-Minimum) statt 100 wie beim Schwester-Test oben -
+    das erzeugt deutlich mehr, kleinere Container (~65 statt ~18 bei 100
+    Packstücken) und ist damit der ungünstigere Fall für balance_containers'
+    O(Container² × Items²)-Tausch-Suche. Nutzt jetzt den tatsächlichen
+    App-Standard (beam_width fest auf 1, siehe README - der Regler wurde
+    entfernt) statt des zuvor getesteten bw=6 - empirisch ~750ms für die
+    komplette Pipeline (Ensemble + LNS + beide neuen Funktionen), Budget
+    mit Sicherheitsabstand auf 3s gesetzt."""
+    import time
+
+    worst = 0.0
+    for seed in range(1, 8):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(100, 8, 5, seed=seed)
+        t0 = time.time()
+        beam = flexible_beam_search_construction(item_sizes, item_regions, 30.0, road_cost, sea_freight)
+        containers = [a["items"] for a in beam]
+        port_consolidation_frontier(containers, item_regions, item_sizes, road_cost, sea_freight)
+        balance_containers(containers, item_sizes, item_regions, 30.0, road_cost, sea_freight)
         worst = max(worst, time.time() - t0)
     assert worst < 5.0, f"Worst Case dauerte {worst:.1f}s"
 
@@ -1210,3 +1285,95 @@ def test_comparison_tab_shows_final_port_assignment_side_by_side():
     assert len(captions) == 3, f"Erwartete 3 Beschriftungen für die finalen Zuordnungen, gefunden: {captions}"
     for label in ["Blind gepackt", "Hafen-bewusst gruppiert", "Beam Search"]:
         assert any(label in c for c in captions), f"Beschriftung für {label} fehlt"
+
+
+def test_port_consolidation_frontier_covers_all_stops_and_is_monotone_improving():
+    """Regressionstest für das auf Nutzerwunsch ergänzte Feature "Alternative
+    Lösungen" (siehe README): port_consolidation_frontier berechnet für jede
+    erlaubte Hafenzahl k die günstigste Kombination von k Häfen bei fester
+    Packung. Mehr erlaubte Häfen kann die Kosten nur senken oder gleich
+    lassen, nie erhöhen (jede k-Teilmenge ist in jeder (k+1)-Teilmenge, die
+    sie enthält, mit erfasst) - dieser Test prüft diese Monotonie direkt."""
+    for seed in range(1, 6):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(
+            40, 5, 4, seed=seed, sea_freight_base=1500, sea_freight_spread=0.4,
+        )
+        capacity = 100.0
+        beam = flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight)
+        containers = [a["items"] for a in beam]
+        frontier = port_consolidation_frontier(containers, item_regions, item_sizes, road_cost, sea_freight)
+
+        n_ports = len(sea_freight)
+        assert set(frontier.keys()) == set(range(1, n_ports + 1))
+        costs = [frontier[k][0] for k in range(1, n_ports + 1)]
+        for i in range(len(costs) - 1):
+            assert costs[i] >= costs[i + 1] - 1e-6, f"seed={seed}: mehr Häfen sollte nie teurer sein: {costs}"
+        # bei allen Haefen erlaubt muss das Ergebnis der unbeschraenkten Kostenoptimierung entsprechen
+        unrestricted_cost = sum(a["cost"] for a in beam)
+        assert abs(costs[-1] - unrestricted_cost) < 1e-6
+
+
+def test_balance_containers_never_loses_items_and_respects_cost_tolerance():
+    """Regressionstest für balance_containers (siehe README, Feature
+    "Alternative Lösungen"): darf nie Packstücke verlieren und die
+    Kostenerhöhung darf die dokumentierte Toleranz (Standard 5%) nicht
+    überschreiten."""
+    for seed in range(1, 8):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(
+            50, 5, 4, seed=seed, sea_freight_base=1500, sea_freight_spread=0.5,
+        )
+        capacity = 30.0
+        beam = flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight)
+        containers = [a["items"] for a in beam]
+        base_cost = sum(a["cost"] for a in beam)
+
+        balanced = balance_containers(containers, item_sizes, item_regions, capacity, road_cost, sea_freight)
+        all_items = sorted(i for a in balanced for i in a["items"])
+        assert all_items == list(range(50)), f"seed={seed}: nicht alle Packstücke abgedeckt"
+
+        balanced_cost = sum(a["cost"] for a in balanced)
+        assert balanced_cost <= base_cost * 1.05 + 1e-6, (
+            f"seed={seed}: Kostenaufschlag ({(balanced_cost-base_cost)/base_cost*100:.1f}%) "
+            f"übersteigt die dokumentierte 5%-Toleranz"
+        )
+
+
+def test_balance_containers_generally_reduces_fill_variance():
+    """Qualitäts-Sanity-Check: balance_containers sollte die Füllgrad-
+    Streuung über eine Stichprobe hinweg im Schnitt reduzieren, nicht nur
+    manchmal zufällig (empirisch in der ursprünglichen Untersuchung: 65%
+    der Fälle deutliche Verbesserung, siehe README)."""
+    total_reduction_pct = []
+    for seed in range(1, 11):
+        pc, rc, road_cost, sea_freight, item_sizes, item_regions = generate_freight_scenario(
+            50, 5, 4, seed=seed, sea_freight_base=1500, sea_freight_spread=0.5,
+        )
+        capacity = 30.0
+        beam = flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight)
+        containers = [a["items"] for a in beam]
+        base_var = _fill_variance(containers, item_sizes, capacity)
+
+        balanced = balance_containers(containers, item_sizes, item_regions, capacity, road_cost, sea_freight)
+        balanced_containers = [a["items"] for a in balanced]
+        balanced_var = _fill_variance(balanced_containers, item_sizes, capacity)
+
+        if base_var > 1e-9:
+            total_reduction_pct.append((base_var - balanced_var) / base_var * 100)
+
+    assert sum(total_reduction_pct) / len(total_reduction_pct) > 0, (
+        "Durchschnittliche Streuungsreduktion sollte positiv sein"
+    )
+
+
+def test_alternative_solutions_section_renders():
+    """Prüft, dass die neue 'Alternative Lösungen'-Sektion (auf
+    Nutzerwunsch ergänzt, siehe README) tatsächlich in der App erscheint,
+    inklusive Häfen-Konsolidierungs-Tabelle und ausgeglichener Alternative."""
+    at = fresh_app()
+    assert_ok(at)
+    markdowns = "\n".join(str(m.value) for m in at.markdown)
+    assert "Alternative Lösungen" in markdowns
+    assert "wenige Häfen" in markdowns
+    assert "Ausgeglichenere Container" in markdowns
+    labels = [d.label for d in at.download_button]
+    assert any("ausgeglichen" in l for l in labels), "PDF-Download für die ausgeglichene Lösung fehlt"

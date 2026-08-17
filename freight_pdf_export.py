@@ -39,17 +39,32 @@ def generate_consolidation_plan_pdf(label, assignments, item_sizes, item_regions
     pdf.cell(0, 8, "Container-Zuweisungen", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     headers = ["#", "Hafen", "Packstuecke", "Kosten (EUR)"]
     widths = [12, 25, 25, 30]
-    pdf.set_font("Helvetica", "B", 9)
-    pdf.set_fill_color(235, 235, 235)
-    for h, w in zip(headers, widths):
-        pdf.cell(w, 7, h, border=1, fill=True, new_x=XPos.RIGHT, new_y=YPos.TOP)
-    pdf.ln(7)
 
-    pdf.set_font("Helvetica", "", 9)
+    def draw_table_header():
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_fill_color(235, 235, 235)
+        for h, w in zip(headers, widths):
+            pdf.cell(w, 7, h, border=1, fill=True, new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.ln(7)
+        pdf.set_font("Helvetica", "", 9)
+
+    draw_table_header()
+
+    # Bei vielen Containern (z. B. 65+ bei kleiner Kapazitaet und vielen
+    # Packstuecken, siehe Tests) reicht eine Seite nicht - set_auto_page_break
+    # loest dann automatisch einen Seitenumbruch aus, wiederholt aber NICHT
+    # die Tabellenkopfzeile. Deshalb vor jeder Zeile die Y-Position pruefen
+    # und bei drohendem Seitenumbruch manuell umbrechen + Kopfzeile neu
+    # zeichnen, statt eine unbeschriftete Fortsetzungstabelle zu riskieren.
+    row_height = 6
+    bottom_margin = pdf.h - pdf.b_margin
     for i, c in enumerate(assignments):
+        if pdf.get_y() + row_height > bottom_margin:
+            pdf.add_page()
+            draw_table_header()
         row = [str(i + 1), f"Hafen {c['port'] + 1}", str(len(c["items"])), f"{c['cost']:.0f}"]
         for val, w in zip(row, widths):
-            pdf.cell(w, 6, val, border=1, new_x=XPos.RIGHT, new_y=YPos.TOP)
-        pdf.ln(6)
+            pdf.cell(w, row_height, val, border=1, new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.ln(row_height)
 
     return bytes(pdf.output())

@@ -41,6 +41,7 @@ README.
 
 import heapq
 from collections import defaultdict
+from itertools import combinations
 
 import numpy as np
 
@@ -680,7 +681,7 @@ def _large_neighborhood_search(base_containers, item_sizes, item_regions, capaci
     return best_containers, best_cost
 
 
-def _ensemble_best_result(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=2, max_rounds=None):
+def _ensemble_best_result(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=1, max_rounds=None):
     """Ensemble-Kern von flexible_beam_search_construction, ausgelagert
     für separate Testbarkeit (siehe README, neunter Fund): dieser Teil
     bleibt weiterhin beweisbar monoton in beam_width (0 von 20 Testfällen
@@ -731,7 +732,7 @@ def _ensemble_best_result(item_sizes, item_regions, capacity, road_cost, sea_fre
     return min([best_from_blind, best_from_alt], key=lambda t: t[1])
 
 
-def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=2, max_rounds=None):
+def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight, beam_width=1, max_rounds=None):
     """Erweiterung auf ausdrücklichen Wunsch: die starre Vorab-Gruppierung
     nach individuell günstigstem Hafen (port_aware_construction,
     beam_search_construction, monobeam_construction) kann Wert liegen
@@ -865,7 +866,29 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
     Untersuchung). Der ENSEMBLE-Teil VOR LNS (siehe _ensemble_best_result)
     bleibt weiterhin beweisbar monoton - nur die LNS-Politur danach (mit
     festem internem Zufalls-Seed, unabhängig von beam_width) verletzt die
-    Garantie in ~10 % der Testfälle, jeweils um <0,5 % Kostendifferenz."""
+    Garantie in ~10 % der Testfälle, jeweils um <0,5 % Kostendifferenz.
+
+    EIN ZEHNTER FUND, auf Nutzerbeobachtung ("die Beam-Breite scheint
+    nichts zu bringen") untersucht: bestätigt, kein Zufall. Selbst bei nur
+    EINEM Startpunkt (also ohne die Auswahl zwischen mehreren Kandidaten,
+    die beam_width sonst ermöglicht) und OHNE LNS zeigte sich in 40 % der
+    Testfälle exakt kein Unterschied zwischen Breite 1 und 6 - der
+    Tausch-Zug in _improve_from_baseline (siehe dort) prüft in Runde 1
+    bereits erschöpfend jedes Packstück-Paar über jedes Container-Paar
+    hinweg und findet dadurch meist schon das lokale Optimum vom
+    jeweiligen Startpunkt aus; die "Zweitbesten" Kandidaten, die bei
+    größerer Breite zusätzlich weiterverfolgt werden, führen in den
+    Folgerunden (nur noch Verschieben/Abspalten) selten zu einem anderen
+    Ziel. Dieselbe Art Befund wie bei den mehrfach redundant gewordenen
+    Startlösungen (siehe oben) - nur diesmal betrifft es die Suchbreite
+    selbst, nicht die Auswahl der Startpunkte. Der `beam_width`-Parameter
+    bleibt aus Testbarkeitsgründen erhalten (mehrere Tests verifizieren
+    z. B. die verbleibende, wenn auch geringe Monotonie-Eigenschaft
+    direkt), wird von der App aber nicht mehr über einen Regler gesetzt -
+    der Aufrufer (app.py) übergibt keinen Wert mehr, wodurch der neue,
+    empirisch als schnellster ohne Qualitätseinbuße ermittelte Standard
+    (beam_width=1) greift. Rechenzeit-Ersparnis bei der App-Obergrenze:
+    ~502ms statt zuvor ~1,5-1,6s bei festem beam_width=2."""
     n = len(item_sizes)
     if n == 0:
         return []
@@ -882,6 +905,120 @@ def flexible_beam_search_construction(item_sizes, item_regions, capacity, road_c
     best_containers, _best_lns_score = _large_neighborhood_search(
         best_containers, item_sizes, item_regions, capacity, road_cost, sea_freight,
     )
+
+    assignments = []
+    for items in best_containers:
+        port, cost = _best_port_for_container(items, item_regions, item_sizes, road_cost, sea_freight)
+        assignments.append({"items": items, "port": port, "cost": cost})
+    return assignments
+
+
+def _fill_variance(containers, item_sizes, capacity):
+    """Streuung (Varianz) der Container-Füllgrade - Hilfsfunktion für
+    balance_containers (siehe dort)."""
+    rates = [sum(item_sizes[i] for i in c) / capacity for c in containers if c]
+    if not rates:
+        return 0.0
+    return float(np.var(rates))
+
+
+def port_consolidation_frontier(containers, item_regions, item_sizes, road_cost, sea_freight):
+    """Für jede Anzahl k=1..n_ports erlaubter Häfen: die günstigste
+    Kombination von genau k Häfen (feste Packung, nur die Hafenwahl
+    variiert je Container innerhalb dieser Teilmenge) - ergibt eine
+    Kosten-vs-Konsolidierung-Kurve.
+
+    Auf Nutzerwunsch ergänzt (Quality-Diversity-Feature, siehe README):
+    statt abstrakter Verhaltens-Vielfalt (die als reine
+    Optimierungsverbesserung nachweislich nicht half, siehe README) eine
+    GESCHÄFTLICH motivierte Alternative - "was kostet mich Konsolidierung
+    auf wenige Häfen/Spediteure?" ist eine reale Abwägung in der
+    Logistikpraxis (einfachere Abwicklung, bessere Verhandlungsmacht bei
+    einem Anbieter, ggf. Mengenrabatte), auch wenn sie nicht die
+    Kosten-optimale Lösung ist.
+
+    Nutzt die BEREITS FESTE Packung (keine Neu-Konstruktion) - nur welcher
+    Hafen je Container gewählt wird, variiert. Bei bis zu 5 Häfen (App-
+    Obergrenze) sind das höchstens 2^5=32 Teilmengen, je Teilmenge O(Container
+    × Teilmengengröße) - empirisch ~3ms bei 100 Packstücken und 5 Häfen,
+    vernachlässigbar."""
+    n_ports = len(sea_freight)
+    non_empty = [c for c in containers if c]
+    frontier = {}
+    for k in range(1, n_ports + 1):
+        best_cost, best_subset = float("inf"), None
+        for subset in combinations(range(n_ports), k):
+            total = 0.0
+            for c in non_empty:
+                best_port_cost = float("inf")
+                for port in subset:
+                    cost = float(sea_freight[port])
+                    for idx in c:
+                        cost += road_cost[item_regions[idx]][port] * item_sizes[idx]
+                    if cost < best_port_cost:
+                        best_port_cost = cost
+                total += best_port_cost
+            if total < best_cost:
+                best_cost, best_subset = total, subset
+        frontier[k] = (best_cost, best_subset)
+    return frontier
+
+
+def balance_containers(base_containers, item_sizes, item_regions, capacity, road_cost, sea_freight,
+                        max_rounds=10, cost_tolerance=0.05):
+    """Lokale Tausch-Suche, die die STREUUNG der Container-Füllgrade
+    minimiert (statt Kosten) - erlaubt dabei eine Kostenerhöhung bis zu
+    `cost_tolerance` (Standard 5%) gegenüber der Kosten-optimalen
+    Ausgangslösung, um echte Balance-Verbesserungen zuzulassen, statt bei
+    der ersten Kostensteigerung abzubrechen.
+
+    Auf Nutzerwunsch ergänzt (siehe README, Quality-Diversity-Feature):
+    eine zweite geschäftlich motivierte Alternative neben der Häfen-
+    Konsolidierung - gleichmäßigere Auslastung kann in der Praxis Risiken
+    reduzieren (ein einzelner, fast voller Container als Nadelöhr) und
+    Verladung/Handling planbarer machen. Empirisch verifiziert (40
+    Testfälle): in 65 % der Fälle eine deutliche Verbesserung (>30 %
+    weniger Streuung) bei im Schnitt nur ~1 % Kostenaufschlag (Maximum
+    ~3 %) - in den übrigen Fällen war die Ausgangslösung bereits gut
+    ausbalanciert, keine Verschlechterung."""
+    containers = [list(c) for c in base_containers]
+    base_cost = sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in containers if c)
+    max_cost = base_cost * (1 + cost_tolerance)
+
+    best_containers = [list(c) for c in containers]
+    best_var = _fill_variance(containers, item_sizes, capacity)
+
+    for _round in range(max_rounds):
+        improved = False
+        n_c = len(containers)
+        container_used = [sum(item_sizes[i] for i in c) for c in containers]
+        for c1 in range(n_c):
+            for c2 in range(c1 + 1, n_c):
+                if not containers[c1] or not containers[c2]:
+                    continue
+                for i1 in containers[c1]:
+                    for i2 in containers[c2]:
+                        s1, s2 = item_sizes[i1], item_sizes[i2]
+                        new_used_c1 = container_used[c1] - s1 + s2
+                        new_used_c2 = container_used[c2] - s2 + s1
+                        if new_used_c1 > capacity + EPS or new_used_c2 > capacity + EPS:
+                            continue
+                        new_c1 = [i for i in containers[c1] if i != i1] + [i2]
+                        new_c2 = [i for i in containers[c2] if i != i2] + [i1]
+                        trial = [list(c) for c in containers]
+                        trial[c1], trial[c2] = new_c1, new_c2
+                        trial_var = _fill_variance(trial, item_sizes, capacity)
+                        if trial_var >= best_var - 1e-9:
+                            continue
+                        trial_cost = sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in trial if c)
+                        if trial_cost <= max_cost:
+                            best_var = trial_var
+                            best_containers = trial
+                            containers = trial
+                            container_used = [sum(item_sizes[i] for i in c) for c in containers]
+                            improved = True
+        if not improved:
+            break
 
     assignments = []
     for items in best_containers:
