@@ -88,7 +88,8 @@ with st.sidebar:
         "Preisunterschied zwischen Häfen", *bounds("sea_spread_slider"), step=0.05, key="sea_spread_slider",
         help="0 = alle Häfen gleich teuer, höhere Werte = größere Schwankung.",
     )
-    seed = st.number_input("Zufalls-Seed", step=1, key="seed_input")
+    seed_lo, seed_hi = bounds("seed_input")
+    seed = st.number_input("Zufalls-Seed", min_value=seed_lo, max_value=seed_hi, step=1, key="seed_input")
 
     st.button(
         "🎲 Neues Szenario generieren", use_container_width=True, on_click=randomize_seed,
@@ -224,12 +225,11 @@ with alt_col1:
 
 with alt_col2:
     st.markdown("#### ⚖️ Ausgeglichenere Container")
-    stats_beam_alt = evaluate_assignment(beam_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
     stats_balanced = evaluate_assignment(balanced_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
     fill_beam = [sum(item_sizes[i] for i in a["items"]) / capacity * 100 for a in beam_assignments if a["items"]]
     fill_balanced = [sum(item_sizes[i] for i in a["items"]) / capacity * 100 for a in balanced_assignments if a["items"]]
-    extra_cost_balanced = stats_balanced["total_cost"] - stats_beam_alt["total_cost"]
-    extra_pct_balanced = (extra_cost_balanced / stats_beam_alt["total_cost"] * 100) if stats_beam_alt["total_cost"] > 0 else 0.0
+    extra_cost_balanced = stats_balanced["total_cost"] - stats_beam["total_cost"]
+    extra_pct_balanced = (extra_cost_balanced / stats_beam["total_cost"] * 100) if stats_beam["total_cost"] > 0 else 0.0
     if fill_beam and fill_balanced:
         # Regler-Minimum ist aktuell 10 Packstuecke, dieser Fall ist ueber
         # die UI nicht erreichbar - Schutz trotzdem ergaenzt, falls sich
@@ -242,7 +242,7 @@ with alt_col2:
             f"{'+' if extra_cost_balanced >= 0 else ''}{extra_pct_balanced:.1f}% Kosten."
         )
     bc1, bc2 = st.columns(2)
-    bc1.metric("Kostenoptimal", f"{stats_beam_alt['total_cost']:.0f} €")
+    bc1.metric("Kostenoptimal", f"{stats_beam['total_cost']:.0f} €")
     bc2.metric("Ausgeglichen", f"{stats_balanced['total_cost']:.0f} €", delta=f"+{extra_cost_balanced:.0f} €", delta_color="inverse")
 
 with st.expander("📍 Karte der ausgeglichenen Lösung", expanded=False):

@@ -84,6 +84,22 @@ def _best_port_for_container(container_items, item_regions, item_sizes, road_cos
     return best_port, best_cost
 
 
+def _group_items_by_best_port(item_sizes, item_regions, road_cost):
+    """Gruppiert Packstück-Indizes nach dem für ihre Zielregion straßenkosten-
+    günstigsten Hafen (`np.argmin(road_cost, axis=1)`) - die Vorab-Gruppierung,
+    die port_aware_construction, beam_search_construction und
+    monobeam_construction alle teilen. Gibt ein dict Hafen-Index -> Liste von
+    Packstück-Indizes zurück."""
+    n_regions = road_cost.shape[0]
+    best_port_per_region = np.argmin(road_cost, axis=1)
+    groups = defaultdict(list)
+    for idx in range(len(item_sizes)):
+        region = item_regions[idx]
+        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
+        groups[preferred].append(idx)
+    return groups
+
+
 def _total_cost_aware_port_preference(item_sizes, item_regions, capacity, road_cost, sea_freight, fill_fraction=0.6):
     """Wie die Hafen-Präferenz-Gruppierung von port_aware_construction &
     Co., aber berücksichtigt bei der VORAB-Gruppierung (vor dem Packen)
@@ -145,17 +161,7 @@ def blind_packing_construction(item_sizes, item_regions, capacity, road_cost, se
 
 
 def port_aware_construction(item_sizes, item_regions, capacity, road_cost, sea_freight):
-    n_regions = road_cost.shape[0]
-    best_port_per_region = np.argmin(road_cost, axis=1)
-
-    groups = defaultdict(list)
-    for idx in range(len(item_sizes)):
-        region = item_regions[idx]
-        if 0 <= region < n_regions:
-            preferred = int(best_port_per_region[region])
-        else:
-            preferred = 0
-        groups[preferred].append(idx)
+    groups = _group_items_by_best_port(item_sizes, item_regions, road_cost)
 
     assignments = []
     for _preferred_port, idxs in groups.items():
@@ -231,14 +237,7 @@ def beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_
     Summe monoton fallender Terme ist selbst monoton fallend. Empirisch
     bestätigt in `test_beam_search_is_monotone_in_beam_width`."""
     n = len(item_sizes)
-    n_regions = road_cost.shape[0]
-    best_port_per_region = np.argmin(road_cost, axis=1)
-
-    groups = defaultdict(list)
-    for idx in range(n):
-        region = item_regions[idx]
-        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
-        groups[preferred].append(idx)
+    groups = _group_items_by_best_port(item_sizes, item_regions, road_cost)
 
     assignments = []
     for _preferred_port, idxs in groups.items():
@@ -272,8 +271,10 @@ def _state_score(containers, item_regions, item_sizes, road_cost, sea_freight):
     Container, so wie er aktuell aussieht - entspricht dem f-Wert in
     monobeam (siehe monobeam_construction), hier ohne Restkosten-Schätzung
     (h=0), da jedes zusätzliche Packstück die Kosten nur erhöhen kann -
-    automatisch "pathmax"-konform ohne die Zusatzlogik des Originals."""
-    return sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in containers)
+    automatisch "pathmax"-konform ohne die Zusatzlogik des Originals.
+    Überspringt leere Container (können durch Verschiebe-/Tausch-Züge
+    entstehen) - ein leerer Container darf keine eigene Seefracht kosten."""
+    return sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in containers if c)
 
 
 def _state_key(containers):
@@ -384,13 +385,7 @@ def monobeam_construction(item_sizes, item_regions, capacity, road_cost, sea_fre
             assignments.append({"items": items, "port": port, "cost": cost})
         return assignments
 
-    n_regions = road_cost.shape[0]
-    best_port_per_region = np.argmin(road_cost, axis=1)
-    groups = defaultdict(list)
-    for idx in range(n):
-        region = item_regions[idx]
-        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
-        groups[preferred].append(idx)
+    groups = _group_items_by_best_port(item_sizes, item_regions, road_cost)
 
     assignments = []
     for _preferred_port, idxs in groups.items():
@@ -562,11 +557,7 @@ def _alternating_regroup(base_containers, item_sizes, item_regions, capacity, ro
     Regressionsrisiko, da nur eine weitere Kandidatenquelle für
     flexible_beam_search_construction's Minimum-Auswahl."""
     containers = [list(c) for c in base_containers]
-
-    def total_cost(cs):
-        return sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in cs)
-
-    best_cost = total_cost(containers)
+    best_cost = _state_score(containers, item_regions, item_sizes, road_cost, sea_freight)
 
     for _cycle in range(max_cycles):
         item_current_port = {}
@@ -583,7 +574,7 @@ def _alternating_regroup(base_containers, item_sizes, item_regions, capacity, ro
         for _port, idxs in groups.items():
             new_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
 
-        new_cost = total_cost(new_containers)
+        new_cost = _state_score(new_containers, item_regions, item_sizes, road_cost, sea_freight)
         if new_cost >= best_cost - EPS:
             break
         containers = new_containers
@@ -654,11 +645,8 @@ def _large_neighborhood_search(base_containers, item_sizes, item_regions, capaci
     bei zuverlässig niedrigerer Rechenzeit."""
     rng = np.random.default_rng(seed)
 
-    def total_cost(containers):
-        return sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in containers)
-
     best_containers = [list(c) for c in base_containers]
-    best_cost = total_cost(best_containers)
+    best_cost = _state_score(best_containers, item_regions, item_sizes, road_cost, sea_freight)
     current_containers = best_containers
 
     for _it in range(n_iterations):
@@ -697,13 +685,7 @@ def _ensemble_best_result(item_sizes, item_regions, capacity, road_cost, sea_fre
     # Ausgangslösung für die Verbesserungssuche verwendet (siehe README,
     # Ablationsstudie) - aber weiterhin als Grundlage für die alternierende
     # Neu-Gruppierung (Ausgangslösung 2) gebraucht.
-    n_regions = road_cost.shape[0]
-    best_port_per_region = np.argmin(road_cost, axis=1)
-    groups = defaultdict(list)
-    for idx in range(n):
-        region = item_regions[idx]
-        preferred = int(best_port_per_region[region]) if 0 <= region < n_regions else 0
-        groups[preferred].append(idx)
+    groups = _group_items_by_best_port(item_sizes, item_regions, road_cost)
     aware_containers = []
     for _preferred_port, idxs in groups.items():
         aware_containers.extend(_ffd_pack(idxs, item_sizes, capacity))
@@ -985,7 +967,7 @@ def balance_containers(base_containers, item_sizes, item_regions, capacity, road
     ~3 %) - in den übrigen Fällen war die Ausgangslösung bereits gut
     ausbalanciert, keine Verschlechterung."""
     containers = [list(c) for c in base_containers]
-    base_cost = sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in containers if c)
+    base_cost = _state_score(containers, item_regions, item_sizes, road_cost, sea_freight)
     max_cost = base_cost * (1 + cost_tolerance)
 
     best_containers = [list(c) for c in containers]
@@ -999,7 +981,22 @@ def balance_containers(base_containers, item_sizes, item_regions, capacity, road
             for c2 in range(c1 + 1, n_c):
                 if not containers[c1] or not containers[c2]:
                     continue
+                # `for i1 in containers[c1]` / `for i2 in containers[c2]` freeze
+                # their iterators to the container contents as of THIS (c1, c2)
+                # pair's start. Accepting a swap reassigns `containers` (and
+                # `container_used`), which those already-running iterators would
+                # not see - continuing to try further (i1, i2) combinations
+                # against the frozen items but the live, already-mutated
+                # `containers[c1]`/`containers[c2]` corrupted the packing (an
+                # item could be duplicated into the new container without ever
+                # being removed from its old one). Fix: stop searching this
+                # (c1, c2) pair the moment a swap is accepted, so every read of
+                # `containers[c1]`/`containers[c2]` below is always consistent
+                # with the still-active i1/i2 iterators.
+                pair_improved = False
                 for i1 in containers[c1]:
+                    if pair_improved:
+                        break
                     for i2 in containers[c2]:
                         s1, s2 = item_sizes[i1], item_sizes[i2]
                         new_used_c1 = container_used[c1] - s1 + s2
@@ -1013,13 +1010,15 @@ def balance_containers(base_containers, item_sizes, item_regions, capacity, road
                         trial_var = _fill_variance(trial, item_sizes, capacity)
                         if trial_var >= best_var - 1e-9:
                             continue
-                        trial_cost = sum(_best_port_for_container(c, item_regions, item_sizes, road_cost, sea_freight)[1] for c in trial if c)
+                        trial_cost = _state_score(trial, item_regions, item_sizes, road_cost, sea_freight)
                         if trial_cost <= max_cost:
                             best_var = trial_var
                             best_containers = trial
                             containers = trial
                             container_used = [sum(item_sizes[i] for i in c) for c in containers]
                             improved = True
+                            pair_improved = True
+                            break
         if not improved:
             break
 
