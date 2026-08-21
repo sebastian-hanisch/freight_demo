@@ -503,6 +503,84 @@ abhängen, gibt es keinen einzelnen festen Seefracht-Wert, der für ALLE Instanz
 zieht - genau deshalb ist der in der README-Tabelle empirisch vermessene Übergang graduell
 (10/10 → 6/10 → 3/10 → 2/10 → 1/10 über den Seefracht-Multiplikator), nicht abrupt.
 
+**Was "Beam Search" tatsächlich berechnet:** Die Vorab-Gruppierung allein erklärt nicht den
+gesamten Vorsprung von "Beam Search" - den größten Teil liefert eine anschließende
+Verbesserungssuche (`_improve_from_baseline`), formal eine lokale Suche auf der Menge aller
+Container-Zustände $\sigma = \{C_1,\dots,C_t\}$ mit Kostenfunktion
+"""
+    )
+    st.latex(r"\mathrm{cost}(C) = c^{sea}_{k^*(C)} + \sum_{i \in C} w_i\, c^{road}_{g_i,k^*(C)}, \qquad \mathrm{score}(\sigma) = \sum_{c\,:\,C_c \neq \emptyset} \mathrm{cost}(C_c)")
+    st.markdown(
+        r"""
+Drei Züge erzeugen aus $\sigma$ Nachbarzustände - jeweils mit INKREMENTELLEM Score-Update
+(nur die 1-2 betroffenen Container werden neu bewertet, nicht ganz $\sigma$):
+
+- **Verschieben** $R_{i,c\to c'}$: Packstück $i$ von $C_c$ nach $C_{c'}$, zulässig falls
+  $\sum_{j \in C_{c'}} w_j + w_i \leq Q$.
+- **Abspalten** $S_i$: $i$ aus $C_c$ in einen neuen Container, zulässig falls $|C_c|>1$.
+- **Tausch** $T_{i_1,i_2}$ ($i_1\in C_{c_1}$, $i_2\in C_{c_2}$): tauscht beide Packstücke
+  zwischen den Containern - NUR in Runde 0 (Kostengrund: $O(t^2 \times |C|^2)$ pro Runde,
+  siehe README).
+
+Die Suche hält einen Beam $B$ aus bis zu `beam_width` Zuständen; je Runde wird
+$B \cup \bigcup_{\sigma \in B} N(\sigma)$ nach Duplikaten (identische Partition) bereinigt und
+auf die `beam_width` besten Scores gekürzt - dieselbe Beam-Mechanik wie bei der
+Konstruktions-Suche, hier aber über Verbesserungs-Zügen statt über schrittweise neue
+Packstücke. Abbruch, sobald eine Runde keinen Kandidaten mehr findet oder den besten Score
+nicht mehr verbessert.
+
+**Zwei Startpunkte, dann das Minimum** (`_ensemble_best_result`):
+"""
+    )
+    st.latex(
+        r"\sigma_{\mathrm{blind}}^{(0)} = \mathrm{FFD}(I), \qquad "
+        r"\sigma_{\mathrm{alt}}^{(0)} = \mathrm{AlternierendeRegruppierung}\big(\mathrm{FFD\text{-}Gruppen}(I)\big)"
+    )
+    st.latex(
+        r"\sigma_{\mathrm{ensemble}} = \arg\min_{\sigma \,\in\, \{\,\mathrm{Verbessern}(\sigma_{\mathrm{blind}}^{(0)}),\; \mathrm{Verbessern}(\sigma_{\mathrm{alt}}^{(0)})\,\}} \mathrm{score}(\sigma)"
+    )
+    st.markdown(
+        r"""
+Ein Minimum über eine Menge unabhängig berechneter Kandidaten kann durch einen weiteren
+Kandidaten nur gleich bleiben oder besser werden, nie schlechter - exakt die
+Monotonie-Begründung, warum die README-Ablationsstudie zwei frühere zusätzliche
+Startpunkte (gesamtkosten-bewusste Gruppierung, monobeam) gefahrlos wieder entfernen
+konnte, sobald ihr Beitrag empirisch vernachlässigbar war (0 bzw. 2 von 40 betroffenen
+Testfällen).
+
+**Alternierende Neu-Gruppierung** (`_alternating_regroup`): abwechselnd (a) jedem Packstück
+das Hafen-Label seines AKTUELLEN Containers zuweisen, (b) danach alle Packstücke mit
+gleichem Label neu gruppieren und komplett neu per FFD packen - eine Koordinaten-Abstiegs-
+Iteration zwischen Hafen-Label und Packung, akzeptiert nur bei echter Verbesserung
+($\mathrm{score}$ sinkt um mehr als $\varepsilon$), sonst Abbruch (höchstens 5 Zyklen).
+Kein globales Optimum garantiert (wie bei k-Means-artigen Alternierungen generell), aber per
+Konstruktion nie schlechter als der eigene Startzustand.
+
+**Large Neighborhood Search** (`_large_neighborhood_search`), abschließende Politur auf dem
+Ensemble-Ergebnis: Zerstören-Operator $D_q$ entfernt $q=2$ zufällig gewählte KOMPLETTE
+Container (alle ihre Packstücke werden frei), Reparatur-Operator per Cheapest Insertion
+fügt die freien Packstücke (größte zuerst) jeweils dort ein, wo die Zusatzkosten minimal
+sind:
+"""
+    )
+    st.latex(
+        r"c^*(i, C) = \arg\min_{C \,\in\, \mathrm{Rest}} \; \big[\mathrm{cost}(C \cup \{i\}) - \mathrm{cost}(C)\big] "
+        r"\quad \text{(neuer Container, falls nirgends Platz)}"
+    )
+    st.markdown(
+        r"""
+Nach jeder Reparatur poliert dieselbe Verbesserungssuche wie oben (kleiner Beam) das
+Ergebnis. 5 Iterationen, dabei wird stets vom zuletzt polierten (nicht notwendig besten)
+Zustand aus weitergemacht, während separat das je beste je gesehene Ergebnis als Inkumbent
+gehalten wird (`if polished_cost < best_cost`) - dadurch kann der Gesamt-Pipeline-Output nie
+schlechter sein als das Ensemble-Ergebnis vor der LNS-Politur. Da der Zerstören-Schritt
+zufällig ist und NICHT von `beam_width` abhängt, bricht dieser letzte Schritt allerdings die
+für `_ensemble_best_result` allein bewiesene Monotonie-Garantie in der Beam-Breite für die
+GESAMTE Pipeline (0 von 20 Testfällen verletzt für den Ensemble-Kern allein, siehe
+Docstring von `_ensemble_best_result`) - ein bewusster, dokumentierter Kompromiss:
+Qualitäts-Zugewinn gegen eine formale Garantie, die für die Nutzer-Erfahrung selbst
+weniger relevant ist als die tatsächlichen Kosten.
+
 **Ausgeglichenere Container** (`balance_containers`) löst ein ZWEITES Optimierungsproblem
 auf derselben Struktur: bei gegebener kostenoptimaler Lösung mit Kosten $B^*$ wird die
 Streuung der Füllgrade $\rho_c = \big(\sum_{i \in C_c} w_i\big) / Q$ minimiert,
