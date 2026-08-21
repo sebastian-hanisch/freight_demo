@@ -419,10 +419,21 @@ Containern ($c = 1, \dots, n$ - im schlechtesten Fall ein Packstück je Containe
     )
     st.markdown(
         r"""
-Die $z_{ck}\, x_{ic}$-Terme im Ziel machen das Problem in dieser Form quadratisch - für die
-im Code tatsächlich verwendete Auswertung wird das umgangen, indem für einen bereits
-FESTEN Packstück-Inhalt eines Containers die günstigste Hafenwahl direkt (nicht als
-weitere Entscheidungsvariable) berechnet wird, siehe `_best_port_for_container()` unten.
+Die $z_{ck}\, x_{ic}$-Terme im Ziel machen das Problem in dieser Form quadratisch - linear
+lässt sich das mit der Standard-McCormick-Substitution $u_{cki} = z_{ck}\, x_{ic} \in \{0,1\}$
+schreiben (für ein Produkt zweier Binärvariablen exakt, kein Big-M nötig):
+"""
+    )
+    st.latex(
+        r"u_{cki} \leq z_{ck}, \qquad u_{cki} \leq x_{ic}, "
+        r"\qquad u_{cki} \geq z_{ck} + x_{ic} - 1 \qquad \forall c,k,i"
+    )
+    st.markdown(
+        r"""
+Im Code wird dieses vollständig linearisierte Programm trotzdem nie aufgestellt oder gelöst
+- für einen bereits FESTEN Packstück-Inhalt eines Containers wird die günstigste Hafenwahl
+direkt (nicht als weitere Entscheidungsvariable) berechnet, siehe
+`_best_port_for_container()` unten.
 
 **Warum NP-schwer:** Für $m=1$ (nur ein Hafen) ist $c^{road}_{g_i,1}$ für jedes Packstück
 unabhängig davon fix, in welchem Container es landet - die Straßenkosten-Summe über alle
@@ -457,10 +468,13 @@ gegebenen Container $C$ der günstigste Hafen
     )
     st.markdown(
         r"""
-**Vorab-Gruppierung** (`_group_items_by_best_port`, genutzt von `port_aware_construction`,
-`beam_search_construction` und `monobeam_construction`): jede Region wird - NUR anhand der
+**Vorab-Gruppierung** (`_group_items_by_best_port`): jede Region wird - NUR anhand der
 Straßenkosten, ohne Berücksichtigung der Seefracht - ihrem günstigsten Hafen zugeordnet,
-bevor überhaupt gepackt wird:
+bevor überhaupt gepackt wird. Genutzt von `port_aware_construction` (live als "Hafen-bewusst
+gruppiert") und von `_ensemble_best_result` (dem Kern von `flexible_beam_search_construction`,
+live als "Beam Search") - außerdem von den beiden Referenzimplementierungen
+`beam_search_construction` und `monobeam_construction`, die zum Vergleich im Code bleiben,
+aber nicht mehr in die App verdrahtet sind (siehe README):
 """
     )
     st.latex(r"k_{\mathrm{pref}}(r) = \arg\min_{k \,\in\, K} \; c^{road}_{r,k}")
@@ -470,18 +484,24 @@ Packstücke mit gleichem $k_{\mathrm{pref}}(g_i)$ werden zu einer Gruppe zusamme
 separat per First-Fit-Decreasing gepackt - dieselbe Packroutine wie beim blinden Verfahren,
 nur mit vorheriger Aufteilung nach Hafen-Präferenz.
 
-**Der Kipppunkt (README) formal:** Sei $\Delta t \geq 0$ die zusätzliche Anzahl Container,
-die die Hafen-bewusste Gruppierung gegenüber blindem Packen benötigt (empirisch belegt:
-nie negativ, siehe README), und $\Delta_{road} \geq 0$ die durch die Gruppierung erzielte
-Straßenkosten-Ersparnis. Hafen-bewusste Gruppierung ist günstiger genau dann, wenn
+**Der Kipppunkt (README) formal:** Sei $\Delta_{road} \geq 0$ die durch die Gruppierung
+erzielte Straßenkosten-Ersparnis, und $\Delta_{sea}$ die Summe der Seefracht der zusätzlichen
+Container, die die Hafen-bewusste Gruppierung gegenüber blindem Packen tatsächlich benötigt
+(empirisch belegt: nie weniger Container, siehe README) - nicht deren Anzahl mal ein
+Durchschnittswert, sondern die Summe der konkret gewählten $c^{sea}_{\delta(c)}$ dieser
+Container, da einzelne Häfen bis zu 60 % streuen können. Per Kostenbuchhaltung gilt exakt:
+Hafen-bewusste Gruppierung ist günstiger genau dann, wenn
 """
     )
-    st.latex(r"\Delta_{road} \;>\; \Delta t \cdot \bar{c}^{sea}, \qquad \bar{c}^{sea} = \tfrac{1}{m}\textstyle\sum_{k=1}^m c^{sea}_k")
+    st.latex(r"\Delta_{road} \;>\; \Delta_{sea}")
     st.markdown(
         r"""
 - bei niedriger Seefracht dominiert $\Delta_{road}$ (Gruppierung gewinnt praktisch immer),
-bei hoher Seefracht dominiert $\Delta t \cdot \bar{c}^{sea}$ (blind gepackt gewinnt) - exakt
-der in der README-Tabelle empirisch vermessene Übergang.
+bei hoher Seefracht dominiert $\Delta_{sea}$ (blind gepackt gewinnt). Weil sowohl die Anzahl
+zusätzlicher Container als auch deren tatsächliche Hafenwahl vom konkreten Zufallsszenario
+abhängen, gibt es keinen einzelnen festen Seefracht-Wert, der für ALLE Instanzen die Grenze
+zieht - genau deshalb ist der in der README-Tabelle empirisch vermessene Übergang graduell
+(10/10 → 6/10 → 3/10 → 2/10 → 1/10 über den Seefracht-Multiplikator), nicht abrupt.
 
 **Ausgeglichenere Container** (`balance_containers`) löst ein ZWEITES Optimierungsproblem
 auf derselben Struktur: bei gegebener kostenoptimaler Lösung mit Kosten $B^*$ wird die
@@ -508,13 +528,13 @@ noch Häfen aus $S$ genutzt werden dürfen:
     )
     st.markdown(
         r"""
-Bei höchstens $m=5$ Häfen (App-Obergrenze) sind das über alle $k$ zusammen höchstens
-$2^5=32$ Teilmengen - vollständige Enumeration ist hier (anders als beim Packen selbst)
-unproblematisch, siehe `port_consolidation_frontier`.
+Bei höchstens $m=5$ Häfen (App-Obergrenze) sind das über alle $k=1,\dots,m$ zusammen
+höchstens $2^m - 1 = 31$ nicht-leere Teilmengen - vollständige Enumeration ist hier (anders
+als beim Packen selbst) unproblematisch, siehe `port_consolidation_frontier`.
 
 **Warum überhaupt Heuristiken:** selbst OHNE die Hafenwahl mitzuzählen, ist die Anzahl der
-Möglichkeiten, $n$ Packstücke in ununterschiedene Container aufzuteilen, die Bell-Zahl $B_n$
-- bereits $B_{40} \approx 1{,}575 \times 10^{35}$, bei den in der App maximal einstellbaren
+Möglichkeiten, $n$ Packstücke in ununterschiedene Container aufzuteilen, die Bell-Zahl
+$\beta_n$ - bereits $\beta_{40} \approx 1{,}575 \times 10^{35}$, bei den in der App maximal einstellbaren
 100 Packstücken astronomisch größer. Vollständige Enumeration ist von vornherein
 ausgeschlossen; `evaluate_assignment()` in `freight_evaluation.py` berechnet exakt die
 Zielfunktion von oben ($\texttt{total\_cost}$) für die von den Heuristiken gefundenen

@@ -54,12 +54,9 @@ für einen Container ergibt sich erst aus seinem tatsächlichen Inhalt.
 - **Karte, PDF-Export, Permalink, Feedback-Mechanismus:** wie bei den anderen Demos.
 - Von Anfang an mit dem `SETTING_SPECS`-Muster und NaN/Bounds-Schutz im Permalink
   gebaut (keine nachträglich gefundenen Absturz-Bugs wie bei der Tourenplanung-Demo).
-- **Mathematische Formulierung als eigener Expander:** formales binäres Programm für die
-  gekoppelte Bin-Packing- + Hafenwahl-Entscheidung, NP-Schwere-Beleg über eine Reduktion
-  vom klassischen 1D-Bin-Packing (Spezialfall $m=1$), die First-Fit-Decreasing-Garantie
-  von Dósa (2007), sowie formale Herleitung der Vorab-Gruppierung, des Kipppunkts,
-  von `balance_containers` und `port_consolidation_frontier` als eigenständige
-  Optimierungsprobleme - mit direktem Bezug auf die entsprechenden Funktionen im Code.
+- **Mathematische Formulierung als eigener Expander:** formales binäres Programm,
+  NP-Schwere-Beleg und First-Fit-Decreasing-Garantie, mit direktem Bezug auf die
+  entsprechenden Funktionen im Code.
 
 ## Der zentrale Befund: ein echter Kipppunkt, kein Selbstläufer
 
