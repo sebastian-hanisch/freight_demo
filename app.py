@@ -371,6 +371,157 @@ Grundprinzip aus gekoppelter Gruppierung und Bewertung bleibt aber dasselbe.
 """
     )
 
+with st.expander("📐 Mathematische Formulierung"):
+    st.markdown(
+        r"""
+**Gegeben:**
+
+- Packstücke $I = \{1,\dots,n\}$, jedes mit Größe $w_i > 0$ und Zielregion
+  $g_i \in \{1,\dots,R\}$
+- Häfen $K = \{1,\dots,m\}$
+- Container-Kapazität $Q$
+- Straßenkosten $c^{road}_{r,k} \geq 0$ je Größeneinheit von Region $r$ über Hafen $k$
+  (`road_cost[r][k]`)
+- Seefracht $c^{sea}_k \geq 0$ je genutztem Container über Hafen $k$ (`sea_freight[k]`)
+
+**Gesucht:** eine Partition von $I$ in Container $C_1,\dots,C_t$ (Anzahl $t$ frei wählbar)
+mit $\sum_{i \in C_c} w_i \leq Q$ für jeden Container $c$, sowie eine Hafenzuordnung
+$\delta: \{1,\dots,t\} \to K$, die die Gesamtkosten minimiert:
+"""
+    )
+    st.latex(
+        r"\min \; \sum_{c=1}^{t} \Big[\, c^{sea}_{\delta(c)} "
+        r"+ \sum_{i \in C_c} w_i \, c^{road}_{g_i,\delta(c)} \Big]"
+    )
+    st.latex(
+        r"\text{u. d. N.} \quad \sum_{i \in C_c} w_i \leq Q \;\; \forall c, "
+        r"\qquad \{C_1,\dots,C_t\} \text{ partitioniert } I"
+    )
+    st.markdown(
+        r"""
+Als binäres Programm mit Packvariablen $x_{ic} \in \{0,1\}$ (= 1, wenn Packstück $i$ in
+Container $c$ liegt), Nutzungsvariablen $y_c \in \{0,1\}$ (= 1, wenn Container $c$
+überhaupt verwendet wird) und Hafenvariablen $z_{ck} \in \{0,1\}$ (= 1, wenn Container $c$
+über Hafen $k$ verschifft wird), über eine obere Schranke von höchstens $n$ potenziellen
+Containern ($c = 1, \dots, n$ - im schlechtesten Fall ein Packstück je Container):
+"""
+    )
+    st.latex(
+        r"\min \; \sum_{c=1}^{n} \sum_{k=1}^{m} z_{ck}\, c^{sea}_k "
+        r"+ \sum_{c=1}^{n} \sum_{k=1}^{m} \sum_{i=1}^{n} z_{ck}\, x_{ic}\, w_i \, c^{road}_{g_i,k}"
+    )
+    st.latex(
+        r"\text{u. d. N.} \quad \sum_{c=1}^{n} x_{ic} = 1 \;\; \forall i, "
+        r"\qquad \sum_{i=1}^{n} x_{ic}\, w_i \leq Q\, y_c \;\; \forall c"
+    )
+    st.latex(
+        r"\sum_{k=1}^{m} z_{ck} = y_c \;\; \forall c, \qquad x_{ic} \leq y_c \;\; \forall i, c"
+    )
+    st.markdown(
+        r"""
+Die $z_{ck}\, x_{ic}$-Terme im Ziel machen das Problem in dieser Form quadratisch - für die
+im Code tatsächlich verwendete Auswertung wird das umgangen, indem für einen bereits
+FESTEN Packstück-Inhalt eines Containers die günstigste Hafenwahl direkt (nicht als
+weitere Entscheidungsvariable) berechnet wird, siehe `_best_port_for_container()` unten.
+
+**Warum NP-schwer:** Für $m=1$ (nur ein Hafen) ist $c^{road}_{g_i,1}$ für jedes Packstück
+unabhängig davon fix, in welchem Container es landet - die Straßenkosten-Summe über alle
+Packstücke ist dann eine Konstante, unabhängig von der Partition. Die Zielfunktion
+reduziert sich exakt auf $c^{sea}_1 \cdot t$ (Seefracht mal Anzahl genutzter Container) -
+also auf das Minimieren der Container-Anzahl bei gegebener Kapazität $Q$: das klassische
+**1D-Bin-Packing-Problem**, seit Garey & Johnson (1979) als NP-schwer bekannt. Da $m=1$
+ein Spezialfall unseres Problems ist, ist auch die allgemeine Version (Bin-Packing UND
+Hafenwahl gemeinsam) für $m \geq 1$ NP-schwer - eine Reduktion, kein bloßes Analogieargument.
+
+**First-Fit-Decreasing (`_ffd_pack`):** Packstücke absteigend nach $w_i$ sortiert, jedes in
+den ersten Container mit ausreichender Restkapazität gelegt, sonst einen neuen eröffnet.
+Für reines 1D-Bin-Packing (ohne Hafenwahl) gilt die von Dósa (2007) als scharf bewiesene
+Garantie
+"""
+    )
+    st.latex(r"\mathrm{FFD}(I) \;\leq\; \tfrac{11}{9}\,\mathrm{OPT}(I) + \tfrac{6}{9}")
+    st.markdown(
+        r"""
+(oft locker als "$\tfrac{11}{9}\cdot\mathrm{OPT}+1$" zitiert, so auch im README) - ein
+starker Ausgangspunkt, der erklärt, warum die Gruppierungs-Entscheidung (siehe unten) den
+Kipppunkt-Effekt dominiert, nicht die Packreihenfolge selbst (siehe README,
+Skalierungsanalyse).
+
+**Hafenwahl bei festem Container-Inhalt** (`_best_port_for_container`): für einen
+gegebenen Container $C$ der günstigste Hafen
+"""
+    )
+    st.latex(
+        r"k^*(C) = \arg\min_{k \,\in\, K} \; \Big[\, c^{sea}_k "
+        r"+ \sum_{i \in C} w_i\, c^{road}_{g_i,k} \Big]"
+    )
+    st.markdown(
+        r"""
+**Vorab-Gruppierung** (`_group_items_by_best_port`, genutzt von `port_aware_construction`,
+`beam_search_construction` und `monobeam_construction`): jede Region wird - NUR anhand der
+Straßenkosten, ohne Berücksichtigung der Seefracht - ihrem günstigsten Hafen zugeordnet,
+bevor überhaupt gepackt wird:
+"""
+    )
+    st.latex(r"k_{\mathrm{pref}}(r) = \arg\min_{k \,\in\, K} \; c^{road}_{r,k}")
+    st.markdown(
+        r"""
+Packstücke mit gleichem $k_{\mathrm{pref}}(g_i)$ werden zu einer Gruppe zusammengefasst und
+separat per First-Fit-Decreasing gepackt - dieselbe Packroutine wie beim blinden Verfahren,
+nur mit vorheriger Aufteilung nach Hafen-Präferenz.
+
+**Der Kipppunkt (README) formal:** Sei $\Delta t \geq 0$ die zusätzliche Anzahl Container,
+die die Hafen-bewusste Gruppierung gegenüber blindem Packen benötigt (empirisch belegt:
+nie negativ, siehe README), und $\Delta_{road} \geq 0$ die durch die Gruppierung erzielte
+Straßenkosten-Ersparnis. Hafen-bewusste Gruppierung ist günstiger genau dann, wenn
+"""
+    )
+    st.latex(r"\Delta_{road} \;>\; \Delta t \cdot \bar{c}^{sea}, \qquad \bar{c}^{sea} = \tfrac{1}{m}\textstyle\sum_{k=1}^m c^{sea}_k")
+    st.markdown(
+        r"""
+- bei niedriger Seefracht dominiert $\Delta_{road}$ (Gruppierung gewinnt praktisch immer),
+bei hoher Seefracht dominiert $\Delta t \cdot \bar{c}^{sea}$ (blind gepackt gewinnt) - exakt
+der in der README-Tabelle empirisch vermessene Übergang.
+
+**Ausgeglichenere Container** (`balance_containers`) löst ein ZWEITES Optimierungsproblem
+auf derselben Struktur: bei gegebener kostenoptimaler Lösung mit Kosten $B^*$ wird die
+Streuung der Füllgrade $\rho_c = \big(\sum_{i \in C_c} w_i\big) / Q$ minimiert,
+"""
+    )
+    st.latex(
+        r"\min \; \mathrm{Var}(\rho) = \tfrac{1}{t}\textstyle\sum_{c=1}^{t}(\rho_c - \bar\rho)^2 "
+        r"\quad \text{u. d. N.} \quad \sum_{c=1}^{t}\big[c^{sea}_{\delta(c)} + \textstyle\sum_{i \in C_c} w_i c^{road}_{g_i,\delta(c)}\big] \leq (1+\tau)\, B^*"
+    )
+    st.markdown(
+        r"""
+mit Toleranz $\tau = 0{,}05$ (5 %, Standardwert) - gelöst über paarweise Packstück-Tausche
+zwischen zwei Containern, die die Varianz senken, ohne die Kostenschranke zu verletzen.
+
+**Häfen-Konsolidierungs-Kurve** (`port_consolidation_frontier`): bei FESTER Packung wird für
+jedes $k=1,\dots,m$ die günstigste $k$-elementige Teilmenge $S \subseteq K$ gesucht, wenn nur
+noch Häfen aus $S$ genutzt werden dürfen:
+"""
+    )
+    st.latex(
+        r"\min_{S \subseteq K,\, |S|=k} \; \sum_{c=1}^{t} \min_{j \,\in\, S} "
+        r"\Big[\, c^{sea}_j + \sum_{i \in C_c} w_i\, c^{road}_{g_i,j} \Big]"
+    )
+    st.markdown(
+        r"""
+Bei höchstens $m=5$ Häfen (App-Obergrenze) sind das über alle $k$ zusammen höchstens
+$2^5=32$ Teilmengen - vollständige Enumeration ist hier (anders als beim Packen selbst)
+unproblematisch, siehe `port_consolidation_frontier`.
+
+**Warum überhaupt Heuristiken:** selbst OHNE die Hafenwahl mitzuzählen, ist die Anzahl der
+Möglichkeiten, $n$ Packstücke in ununterschiedene Container aufzuteilen, die Bell-Zahl $B_n$
+- bereits $B_{40} \approx 1{,}575 \times 10^{35}$, bei den in der App maximal einstellbaren
+100 Packstücken astronomisch größer. Vollständige Enumeration ist von vornherein
+ausgeschlossen; `evaluate_assignment()` in `freight_evaluation.py` berechnet exakt die
+Zielfunktion von oben ($\texttt{total\_cost}$) für die von den Heuristiken gefundenen
+Kandidatenlösungen.
+"""
+    )
+
 st.markdown("---")
 
 st.markdown("#### War diese Demo hilfreich für Sie?")
