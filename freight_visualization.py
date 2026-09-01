@@ -64,4 +64,9 @@ def build_freight_map(port_coords, region_coords, assignments, item_regions, ite
         height=520, margin=dict(l=10, r=10, t=30, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
     )
+    # fixedrange auf beiden Achsen: verhindert Pinch-Zoom/Drag-Pan im Chart,
+    # damit auf Touch-Geräten stattdessen die Seite normal gescrollt wird
+    # (Hover-Tooltips bleiben davon unberührt).
+    fig.update_xaxes(fixedrange=True)
+    fig.update_yaxes(fixedrange=True)
     return fig
