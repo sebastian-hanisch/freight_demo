@@ -17,5 +17,3 @@ DEFAULT_CONTAINER_CAPACITY = 100.0  # abstrakte Volumeneinheiten
 DEFAULT_SEA_FREIGHT_BASE = 800.0  # € je genutztem Container
 DEFAULT_SEA_FREIGHT_SPREAD = 0.3  # relative Schwankung zwischen Häfen (0 = alle Häfen gleich teuer)
 DEFAULT_ROAD_COST_PER_UNIT = 5.0  # € je Größeneinheit und Distanzeinheit
-
-FEEDBACK_FILE = "feedback_log.csv"

@@ -184,13 +184,6 @@ def test_pdf_download_buttons_present():
     assert all("PDF" in l for l in labels)
 
 
-def test_feedback_buttons_work():
-    at = fresh_app()
-    up = [b for b in at.button if b.key == "feedback_up_btn"][0]
-    up.click().run(timeout=TIMEOUT)
-    assert_ok(at)
-    assert any("Danke" in str(s.value) for s in at.success)
-
 
 def test_comparison_tab_has_all_three_methods():
     at = fresh_app()
@@ -481,19 +474,6 @@ def test_generate_consolidation_plan_pdf_repeats_header_on_every_page():
 
     data_lines = [l for l in text.split("\n") if l.strip() and l.strip()[0].isdigit()]
     assert len(data_lines) == len(beam), f"Erwartete {len(beam)} Datenzeilen, gefunden {len(data_lines)}"
-
-
-# --- Feedback ---
-
-def test_feedback_log_and_count_roundtrip(tmp_path):
-    from freight_feedback import get_feedback_counts, log_feedback
-
-    log_file = str(tmp_path / "feedback_test.csv")
-    assert get_feedback_counts(log_file) == (0, 0)
-    assert log_feedback("up", log_file) is True
-    assert log_feedback("down", log_file) is True
-    assert log_feedback("up", log_file) is True
-    assert get_feedback_counts(log_file) == (2, 1)
 
 
 # --- Beam Search: Monotonie (Kernanforderung dieser Ergänzung) ---
