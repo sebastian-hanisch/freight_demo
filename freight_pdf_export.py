@@ -31,13 +31,13 @@ def generate_consolidation_plan_pdf(label, assignments, item_sizes, item_regions
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 6, f"Gesamtkosten: {stats['total_cost']:.0f} EUR", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.cell(0, 6, f"davon Seefracht: {stats['sea_cost_total']:.0f} EUR", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.cell(0, 6, f"davon Strassenfracht: {stats['road_cost_total']:.0f} EUR", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.cell(0, 6, f"davon Straßenfracht: {stats['road_cost_total']:.0f} EUR", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.cell(0, 6, f"Anzahl Container: {stats['n_containers']}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(4)
 
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 8, "Container-Zuweisungen", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    headers = ["#", "Hafen", "Packstuecke", "Kosten (EUR)"]
+    headers = ["#", "Hafen", "Packstücke", "Kosten (EUR)"]
     widths = [12, 25, 25, 30]
 
     def draw_table_header():

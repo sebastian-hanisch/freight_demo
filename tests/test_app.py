@@ -470,7 +470,7 @@ def test_generate_consolidation_plan_pdf_repeats_header_on_every_page():
     text = subprocess.run(["pdftotext", "-layout", pdf_path, "-"], capture_output=True, text=True).stdout
     pages = [p for p in text.split("\x0c") if p.strip()]
     for i, page in enumerate(pages):
-        assert "Packstuecke" in page, f"Seite {i + 1} von {len(pages)} hat keine Tabellenkopfzeile"
+        assert "Packstücke" in page, f"Seite {i + 1} von {len(pages)} hat keine Tabellenkopfzeile"
 
     data_lines = [l for l in text.split("\n") if l.strip() and l.strip()[0].isdigit()]
     assert len(data_lines) == len(beam), f"Erwartete {len(beam)} Datenzeilen, gefunden {len(data_lines)}"
