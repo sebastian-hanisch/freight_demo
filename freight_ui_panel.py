@@ -19,7 +19,7 @@ def render_freight_panel(prefix, label, assignments, port_coords, region_coords,
     m3.metric("Container genutzt", f"{stats['n_containers']}")
 
     fig = build_freight_map(port_coords, region_coords, assignments, item_regions, item_sizes)
-    st.plotly_chart(fig, use_container_width=True, key=f"{prefix}_plot")
+    st.plotly_chart(fig, width="stretch", key=f"{prefix}_plot")
 
     pdf_bytes = generate_consolidation_plan_pdf(label, assignments, item_sizes, item_regions, road_cost, sea_freight)
     st.download_button(

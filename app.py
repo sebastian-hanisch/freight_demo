@@ -49,19 +49,19 @@ st.caption("🎯 Schnellstart – ein Beispielszenario laden:")
 preset_col1, preset_col2, preset_col3 = st.columns(3)
 with preset_col1:
     st.button(
-        "🎯 Beam Search lohnt sich", use_container_width=True,
+        "🎯 Beam Search lohnt sich", width="stretch",
         on_click=apply_preset, args=(30, 8, 4, 100.0, 800.0, 0.1, 17),
         help="Viele Regionen bei wenigen Häfen und knappen Kostenunterschieden - Beam Search findet hier gezielte Hafen-Wechsel, die 14% gegenüber reiner Gruppierung sparen.",
     )
 with preset_col2:
     st.button(
-        "⚓ Teure Seefracht", use_container_width=True,
+        "⚓ Teure Seefracht", width="stretch",
         on_click=apply_preset, args=(30, 5, 3, 100.0, 4000.0, 0.3, 4),
         help="Seefracht dominiert die Kosten - hier ist blindes Packen (weniger, volle Container) tatsächlich günstiger.",
     )
 with preset_col3:
     st.button(
-        "🗺️ Starke regionale Streuung", use_container_width=True,
+        "🗺️ Starke regionale Streuung", width="stretch",
         on_click=apply_preset, args=(80, 8, 5, 100.0, 800.0, 0.3, 1),
         help="Viele Regionen und Häfen bei vielen Packstücken - der Vorteil hafen-bewusster Gruppierung fällt hier deutlich stärker aus als im Normalfall (+26% statt der üblichen ~10%).",
     )
@@ -91,7 +91,7 @@ with st.sidebar:
     seed = st.number_input("Zufalls-Seed", min_value=seed_lo, max_value=seed_hi, step=1, key="seed_input")
 
     st.button(
-        "🎲 Neues Szenario generieren", use_container_width=True, on_click=randomize_seed,
+        "🎲 Neues Szenario generieren", width="stretch", on_click=randomize_seed,
         help="Würfelt einen neuen Zufalls-Seed und erzeugt damit ein komplett neues Szenario - "
         "praktisch, ohne selbst eine neue Seed-Zahl eintippen zu müssen.",
     )
@@ -135,7 +135,7 @@ with st.expander("📦 Packstücke (Zusammenfassung)"):
             "Gesamtgröße": round(float(item_sizes[mask].sum()), 1),
             "Günstigster Hafen": f"Hafen {int(np.argmin(road_cost[r])) + 1}",
         })
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
 
 blind_assignments = blind_packing_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
 aware_assignments = port_aware_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
@@ -182,7 +182,7 @@ if cost_saved > 1:
     )
 
 fig_best = build_freight_map(port_coords, region_coords, best["assignments"], item_regions, item_sizes)
-st.plotly_chart(fig_best, use_container_width=True, key="primary_best_plot")
+st.plotly_chart(fig_best, width="stretch", key="primary_best_plot")
 
 pdf_bytes_best = generate_consolidation_plan_pdf("Kostenoptimiert", best["assignments"], item_sizes, item_regions, road_cost, sea_freight_arr)
 st.download_button(
@@ -220,7 +220,7 @@ with alt_col1:
             "Kosten": f"{cost:.0f} €",
             "Aufschlag ggü. frei": f"+{extra_pct:.1f}%" if extra_pct > 0.05 else "optimal",
         })
-    st.dataframe(pd.DataFrame(frontier_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(frontier_rows), width="stretch", hide_index=True)
 
 with alt_col2:
     st.markdown("#### ⚖️ Ausgeglichenere Container")
@@ -246,7 +246,7 @@ with alt_col2:
 
 with st.expander("📍 Karte der ausgeglichenen Lösung", expanded=False):
     fig_balanced = build_freight_map(port_coords, region_coords, balanced_assignments, item_regions, item_sizes)
-    st.plotly_chart(fig_balanced, use_container_width=True, key="balanced_plot")
+    st.plotly_chart(fig_balanced, width="stretch", key="balanced_plot")
     pdf_bytes_balanced = generate_consolidation_plan_pdf("Ausgeglichene Container", balanced_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
     st.download_button(
         "📄 Konsolidierungsplan (ausgeglichen) als PDF herunterladen", data=pdf_bytes_balanced,
@@ -287,7 +287,7 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
                 "Straßenfracht": f"{c['road_cost_total']:.0f} €",
                 "Container": c["n_containers"],
             })
-        st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(comp_rows), width="stretch", hide_index=True)
         st.caption(
             "Blind und Hafen-bewusst nutzen denselben Packmechanismus (First-Fit-Decreasing) und "
             "dieselbe Hafenwahl-Logik je Container - der Unterschied liegt allein in der Gruppierung "
@@ -304,7 +304,7 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
             with col:
                 st.caption(f"{s['label']} (final, {s['total_cost']:.0f} €)")
                 fig_c = build_freight_map(port_coords, region_coords, s["assignments"], item_regions, item_sizes)
-                st.plotly_chart(fig_c, use_container_width=True, key=f"compare_{s['label']}")
+                st.plotly_chart(fig_c, width="stretch", key=f"compare_{s['label']}")
 
 with st.expander("Wie funktioniert diese Demo?"):
     st.markdown(
