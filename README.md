@@ -813,6 +813,18 @@ PDF-Export.
 `test_balance_containers_generally_reduces_fill_variance`,
 `test_alternative_solutions_section_renders`.
 
+## Verwandte Demos mit demselben mathematischen Modell
+
+Verschiedene Themen im Portfolio teilen (fast) dasselbe Modell. Vor einer neuen Demo-Idee deshalb das
+Modell vergleichen, nicht die Kulisse (Stand 2026-09-23):
+
+- **Packproblem + Standort-/Routenwahl (zwei gekoppelte Entscheidungen):** was teilt sich einen Container bzw. ein
+  Fahrzeug, und über welche Anlage läuft es. Hier: Packstücke -> Container plus Hafen je Container. Dieselbe
+  Struktur hat ein Cross-Dock-Routing (einzelne Sendungen -> Ausgangs-Lkw plus Tor, siehe "Anpassungsideen" der
+  `dock_door-demo`); die Idee wurde als Dopplung zu dieser Demo verworfen. Eine neue Idee dieser Struktur
+  (Versandkonsolidierung, Milk-Run-Bündelung, ...) braucht einen anderen Mechanismus, sonst gelten die Befunde
+  dieser Demo (Kipppunkt, Beam Search, LNS).
+
 ## 1. Lokal ausführen
 
 ```bash
