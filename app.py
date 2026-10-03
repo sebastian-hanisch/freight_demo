@@ -487,12 +487,16 @@ Packstücke mit gleichem $k_{\mathrm{pref}}(g_i)$ werden zu einer Gruppe zusamme
 separat per First-Fit-Decreasing gepackt - dieselbe Packroutine wie beim blinden Verfahren,
 nur mit vorheriger Aufteilung nach Hafen-Präferenz.
 
-**Der Kipppunkt (README) formal:** Sei $\Delta_{road} \geq 0$ die durch die Gruppierung
-erzielte Straßenkosten-Ersparnis, und $\Delta_{sea}$ die Summe der Seefracht der zusätzlichen
-Container, die die Hafen-bewusste Gruppierung gegenüber blindem Packen tatsächlich benötigt
-(empirisch belegt: nie weniger Container, siehe README) - nicht deren Anzahl mal ein
-Durchschnittswert, sondern die Summe der konkret gewählten $c^{sea}_{\delta(c)}$ dieser
-Container, da einzelne Häfen bis zu 60 % streuen können. Per Kostenbuchhaltung gilt exakt:
+**Der Kipppunkt (README) formal:** Sei $\Delta_{road}$ die durch die Gruppierung erzielte
+Straßenkosten-Ersparnis (Straßenkosten der blinden minus Straßenkosten der hafen-bewussten
+Lösung) - meist positiv, aber nicht immer: in einer Stichprobe von 1.200 Zufallsinstanzen war
+sie in 14 Fällen negativ. Sei $\Delta_{sea}$ der Seefracht-Mehraufwand der hafen-bewussten
+Gruppierung, also die Differenz der Seefracht-Gesamtsummen beider Lösungen. Er hängt von der
+Zahl der zusätzlichen Container ab (empirisch belegt: hafen-bewusst braucht nie weniger
+Container als blind, siehe README) UND von der tatsächlichen Hafenwahl ALLER Container, da
+einzelne Häfen bis zu 60 % streuen können - es gibt keine eindeutige Zuordnung "zusätzlicher"
+Container, deshalb zählt die Differenz der Gesamtsummen (nicht "Anzahl mal Durchschnittswert").
+Per Kostenbuchhaltung (Gesamtkosten = Straßen- plus Seefracht) gilt exakt:
 Hafen-bewusste Gruppierung ist günstiger genau dann, wenn
 """
     )
@@ -522,8 +526,9 @@ Drei Züge erzeugen aus $\sigma$ Nachbarzustände - jeweils mit INKREMENTELLEM S
   $\sum_{j \in C_{c'}} w_j + w_i \leq Q$.
 - **Abspalten** $S_i$: $i$ aus $C_c$ in einen neuen Container, zulässig falls $|C_c|>1$.
 - **Tausch** $T_{i_1,i_2}$ ($i_1\in C_{c_1}$, $i_2\in C_{c_2}$): tauscht beide Packstücke
-  zwischen den Containern - NUR in Runde 0 (Kostengrund: $O(t^2 \times |C|^2)$ pro Runde,
-  siehe README).
+  zwischen den Containern - NUR in Runde 0 (Kostengrund: jedes Packstück-Paar aus zwei
+  verschiedenen Containern ist ein Kandidat, geschrieben $O(t^2 \times |C|^2)$, genauer
+  höchstens $n^2/2$ pro Runde und unabhängig von der Containerzahl $t$, siehe README).
 
 Die Suche hält einen Beam $B$ aus bis zu `beam_width` Zuständen; je Runde wird
 $B \cup \bigcup_{\sigma \in B} N(\sigma)$ nach Duplikaten (identische Partition) bereinigt und
@@ -548,7 +553,7 @@ Ein Minimum über eine Menge unabhängig berechneter Kandidaten kann durch einen
 Kandidaten nur gleich bleiben oder besser werden, nie schlechter - exakt die
 Monotonie-Begründung, warum die README-Ablationsstudie zwei frühere zusätzliche
 Startpunkte (gesamtkosten-bewusste Gruppierung, monobeam) gefahrlos wieder entfernen
-konnte, sobald ihr Beitrag empirisch vernachlässigbar war (0 bzw. 2 von 40 betroffenen
+konnte, sobald ihr Beitrag empirisch vernachlässigbar war (2 bzw. 0 von 40 betroffenen
 Testfällen).
 
 **Alternierende Neu-Gruppierung** (`_alternating_regroup`): abwechselnd (a) jedem Packstück
@@ -610,13 +615,20 @@ noch Häfen aus $S$ genutzt werden dürfen:
     st.markdown(
         r"""
 Bei höchstens $m=5$ Häfen (App-Obergrenze) sind das über alle $k=1,\dots,m$ zusammen
-höchstens $2^m - 1 = 31$ nicht-leere Teilmengen - vollständige Enumeration ist hier (anders
-als beim Packen selbst) unproblematisch, siehe `port_consolidation_frontier`.
+höchstens $2^m - 1 = 31$ nicht-leere Teilmengen (32 inklusive der leeren Menge) -
+vollständige Enumeration ist hier (anders als beim Packen selbst) unproblematisch, siehe
+`port_consolidation_frontier`.
 
 **Warum überhaupt Heuristiken:** selbst OHNE die Hafenwahl mitzuzählen, ist die Anzahl der
-Möglichkeiten, $n$ Packstücke in ununterschiedene Container aufzuteilen, die Bell-Zahl
-$\beta_n$ - bereits $\beta_{40} \approx 1{,}575 \times 10^{35}$, bei den in der App maximal einstellbaren
-100 Packstücken astronomisch größer. Vollständige Enumeration ist von vornherein
+Möglichkeiten, $n$ Packstücke OHNE Kapazitätsgrenze in ununterschiedene Container
+aufzuteilen, die Bell-Zahl $\beta_n$ - bereits $\beta_{40} \approx 1{,}575 \times 10^{35}$, bei
+den per Regler maximal einstellbaren 100 Packstücken $\beta_{100} \approx 4{,}8 \times 10^{115}$.
+Mit Kapazitätsgrenze $Q$ ist das nur eine obere Schranke, aber eine weit entfernte: bei den
+Standardeinstellungen (Packstückgrößen 5-30, $Q=100$, $n=40$) passen bis zu drei Packstücke
+immer in einen Container, allein das ergibt mindestens $1{,}0 \times 10^{32}$ zulässige
+Aufteilungen. Selbst bei der kleinsten Kapazität $Q=30$ und $n=100$ bleiben typischerweise
+noch über $10^{20}$ (allein die rund 40 Packstücke bis Größe 15 passen paarweise immer
+zusammen). Vollständige Enumeration ist von vornherein
 ausgeschlossen; `evaluate_assignment()` in `freight_evaluation.py` berechnet exakt die
 Zielfunktion von oben ($\texttt{total\_cost}$) für die von den Heuristiken gefundenen
 Kandidatenlösungen.
