@@ -31,12 +31,14 @@ Ensemble-Methode, die aus allen dreien schöpft und zusätzlich verbessert -
 seit einer Literaturrecherche zum zugrundeliegenden Problem (Jost et al.,
 "Partitioned vs. Integrated Planning of Hinterland Networks for LCL
 Transportation", 2022, ein sehr nah verwandtes DB-Schenker-Praxisproblem) um
-drei Ideen erweitert: einen Tausch-Zug in der Verbesserungssuche (siehe
-_improve_from_baseline), eine gesamtkosten-bewusste Gruppierung als
-zusätzliche Ausgangslösung (siehe _total_cost_aware_port_preference) und
-eine alternierende Neu-Gruppierung nach DB Schenkers eigenem iterativem
-Lösungsansatz (siehe _alternating_regroup). Vollständige Herleitung im
-README.
+zwei Ideen erweitert: einen Tausch-Zug in der Verbesserungssuche (siehe
+_improve_from_baseline) und eine alternierende Neu-Gruppierung nach DB
+Schenkers eigenem iterativem Lösungsansatz (siehe _alternating_regroup).
+Eine dritte, gesamtkosten-bewusste Gruppierung als zusätzliche
+Ausgangslösung (_total_cost_aware_port_preference) wurde ebenfalls
+untersucht, aber nach einer Ablationsstudie wieder entfernt, da ihr
+Beitrag nach Einführung der LNS-Politur nur noch marginal war (siehe
+_ensemble_best_result und README). Vollständige Herleitung im README.
 """
 
 import heapq
@@ -516,7 +518,6 @@ def _improve_from_baseline(base_containers, item_sizes, item_regions, capacity, 
         if not candidates:
             break
 
-        candidates.sort(key=lambda t: (t[0], t[1]))
         pool = [(score, _state_key(containers), containers) for containers, score in beam] + candidates
         seen2 = set()
         deduped = []
@@ -528,7 +529,7 @@ def _improve_from_baseline(base_containers, item_sizes, item_regions, capacity, 
             if len(deduped) >= beam_width:
                 break
 
-        if deduped[0][1] >= beam[0][1] - EPS and all(d[1] >= beam[0][1] - EPS for d in deduped):
+        if deduped[0][1] >= beam[0][1] - EPS:
             beam = deduped
             break
 

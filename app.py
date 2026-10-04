@@ -141,13 +141,6 @@ blind_assignments = blind_packing_construction(item_sizes, item_regions, capacit
 aware_assignments = port_aware_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
 beam_assignments = flexible_beam_search_construction(item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
 
-# Alternative Loesungen (auf Nutzerwunsch ergaenzt, siehe README): zwei
-# geschaeftlich motivierte Alternativen zur reinen Kostenoptimierung,
-# beide ausgehend von der bereits kostenoptimalen Loesung.
-beam_containers_for_alt = [a["items"] for a in beam_assignments]
-port_frontier = port_consolidation_frontier(beam_containers_for_alt, item_regions, item_sizes, road_cost, sea_freight_arr)
-balanced_assignments = balance_containers(beam_containers_for_alt, item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
-
 stats_blind = evaluate_assignment(blind_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
 stats_aware = evaluate_assignment(aware_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
 stats_beam = evaluate_assignment(beam_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
@@ -163,6 +156,14 @@ candidates = [
 ]
 best = min(candidates, key=lambda c: c["total_cost"])
 baseline = max(candidates, key=lambda c: c["total_cost"])
+
+# Alternative Loesungen (auf Nutzerwunsch ergaenzt, siehe README): zwei
+# geschaeftlich motivierte Alternativen zur reinen Kostenoptimierung,
+# beide ausgehend von der oben ermittelten kostenoptimalen Loesung (nicht
+# fest von der Beam-Search-Loesung, falls eine andere Methode gewinnt).
+best_containers_for_alt = [a["items"] for a in best["assignments"]]
+port_frontier = port_consolidation_frontier(best_containers_for_alt, item_regions, item_sizes, road_cost, sea_freight_arr)
+balanced_assignments = balance_containers(best_containers_for_alt, item_sizes, item_regions, capacity, road_cost, sea_freight_arr)
 
 st.markdown("## 🎯 Ihre kostenoptimierte Konsolidierung")
 
@@ -225,24 +226,27 @@ with alt_col1:
 with alt_col2:
     st.markdown("#### ⚖️ Ausgeglichenere Container")
     stats_balanced = evaluate_assignment(balanced_assignments, item_sizes, item_regions, road_cost, sea_freight_arr)
-    fill_beam = [sum(item_sizes[i] for i in a["items"]) / capacity * 100 for a in beam_assignments if a["items"]]
+    fill_best = [sum(item_sizes[i] for i in a["items"]) / capacity * 100 for a in best["assignments"] if a["items"]]
     fill_balanced = [sum(item_sizes[i] for i in a["items"]) / capacity * 100 for a in balanced_assignments if a["items"]]
-    extra_cost_balanced = stats_balanced["total_cost"] - stats_beam["total_cost"]
-    extra_pct_balanced = (extra_cost_balanced / stats_beam["total_cost"] * 100) if stats_beam["total_cost"] > 0 else 0.0
-    if fill_beam and fill_balanced:
+    extra_cost_balanced = stats_balanced["total_cost"] - best["total_cost"]
+    extra_pct_balanced = (extra_cost_balanced / best["total_cost"] * 100) if best["total_cost"] > 0 else 0.0
+    if fill_best and fill_balanced:
         # Regler-Minimum ist aktuell 10 Packstuecke, dieser Fall ist ueber
         # die UI nicht erreichbar - Schutz trotzdem ergaenzt, falls sich
         # das Minimum je aendert oder die Funktionen direkt (nicht ueber
         # die App) mit 0 Packstuecken aufgerufen werden.
         st.caption(
             f"Gleichmäßigere Auslastung kann Handling planbarer machen und einzelne, fast randvolle "
-            f"Container als Risiko vermeiden. Füllgrad-Spanne: {min(fill_beam):.0f}-{max(fill_beam):.0f}% → "
+            f"Container als Risiko vermeiden. Füllgrad-Spanne: {min(fill_best):.0f}-{max(fill_best):.0f}% → "
             f"{min(fill_balanced):.0f}-{max(fill_balanced):.0f}%, bei "
             f"{'+' if extra_cost_balanced >= 0 else ''}{extra_pct_balanced:.1f}% Kosten."
         )
     bc1, bc2 = st.columns(2)
-    bc1.metric("Kostenoptimal", f"{stats_beam['total_cost']:.0f} €")
-    bc2.metric("Ausgeglichen", f"{stats_balanced['total_cost']:.0f} €", delta=f"+{extra_cost_balanced:.0f} €", delta_color="inverse")
+    bc1.metric("Kostenoptimal", f"{best['total_cost']:.0f} €")
+    bc2.metric(
+        "Ausgeglichen", f"{stats_balanced['total_cost']:.0f} €",
+        delta=f"{'+' if extra_cost_balanced >= 0 else ''}{extra_cost_balanced:.0f} €", delta_color="inverse",
+    )
 
 with st.expander("📍 Karte der ausgeglichenen Lösung", expanded=False):
     fig_balanced = build_freight_map(port_coords, region_coords, balanced_assignments, item_regions, item_sizes)
@@ -484,14 +488,15 @@ separat per First-Fit-Decreasing gepackt - dieselbe Packroutine wie beim blinden
 nur mit vorheriger Aufteilung nach Hafen-Präferenz.
 
 **Der Kipppunkt (README) formal:** Sei $\Delta_{road}$ die durch die Gruppierung erzielte
-Straßenkosten-Ersparnis (Straßenkosten blind minus hafen-bewusst; meist positiv, in seltenen
-Fällen aber auch negativ), und $\Delta_{sea}$ die Mehrkosten an Seefracht (Gesamt-Seefracht
-hafen-bewusst minus Gesamt-Seefracht blind). Sie entstehen vor allem durch die zusätzlichen
-Container, die die Hafen-bewusste Gruppierung gegenüber blindem Packen tatsächlich benötigt
-(empirisch belegt: nie weniger Container, siehe README) - nicht deren Anzahl mal ein
-Durchschnittswert, sondern die konkret gewählten $c^{sea}_{\delta(c)}$, da einzelne Häfen
-beim Standardwert der Streuung bis zu 60 % der Basis auseinanderliegen können (und sich auch die Hafenwahl der übrigen Container ändern kann).
-Per Kostenbuchhaltung gilt exakt:
+Straßenkosten-Ersparnis (Straßenkosten der blinden minus Straßenkosten der hafen-bewussten
+Lösung) - meist positiv, aber nicht immer: in einer Stichprobe von 1.200 Zufallsinstanzen war
+sie in 14 Fällen negativ. Sei $\Delta_{sea}$ der Seefracht-Mehraufwand der hafen-bewussten
+Gruppierung, also die Differenz der Seefracht-Gesamtsummen beider Lösungen. Er hängt von der
+Zahl der zusätzlichen Container ab (empirisch belegt: hafen-bewusst braucht nie weniger
+Container als blind, siehe README) UND von der tatsächlichen Hafenwahl ALLER Container, da
+einzelne Häfen bis zu 60 % streuen können - es gibt keine eindeutige Zuordnung "zusätzlicher"
+Container, deshalb zählt die Differenz der Gesamtsummen (nicht "Anzahl mal Durchschnittswert").
+Per Kostenbuchhaltung (Gesamtkosten = Straßen- plus Seefracht) gilt exakt:
 Hafen-bewusste Gruppierung ist günstiger genau dann, wenn
 """
     )
@@ -521,8 +526,9 @@ Drei Züge erzeugen aus $\sigma$ Nachbarzustände - jeweils mit INKREMENTELLEM S
   $\sum_{j \in C_{c'}} w_j + w_i \leq Q$.
 - **Abspalten** $S_i$: $i$ aus $C_c$ in einen neuen Container, zulässig falls $|C_c|>1$.
 - **Tausch** $T_{i_1,i_2}$ ($i_1\in C_{c_1}$, $i_2\in C_{c_2}$): tauscht beide Packstücke
-  zwischen den Containern - NUR in Runde 0 (Kostengrund: $O(t^2 \times |C|^2)$ pro Runde,
-  siehe README).
+  zwischen den Containern - NUR in Runde 0 (Kostengrund: jedes Packstück-Paar aus zwei
+  verschiedenen Containern ist ein Kandidat, geschrieben $O(t^2 \times |C|^2)$, genauer
+  höchstens $n^2/2$ pro Runde und unabhängig von der Containerzahl $t$, siehe README).
 
 Die Suche hält einen Beam $B$ aus bis zu `beam_width` Zuständen; je Runde wird
 $B \cup \bigcup_{\sigma \in B} N(\sigma)$ nach Duplikaten (identische Partition) bereinigt und
@@ -609,13 +615,20 @@ noch Häfen aus $S$ genutzt werden dürfen:
     st.markdown(
         r"""
 Bei höchstens $m=5$ Häfen (App-Obergrenze) sind das über alle $k=1,\dots,m$ zusammen
-höchstens $2^m - 1 = 31$ nicht-leere Teilmengen - vollständige Enumeration ist hier (anders
-als beim Packen selbst) unproblematisch, siehe `port_consolidation_frontier`.
+höchstens $2^m - 1 = 31$ nicht-leere Teilmengen (32 inklusive der leeren Menge) -
+vollständige Enumeration ist hier (anders als beim Packen selbst) unproblematisch, siehe
+`port_consolidation_frontier`.
 
 **Warum überhaupt Heuristiken:** selbst OHNE die Hafenwahl mitzuzählen, ist die Anzahl der
-Möglichkeiten, $n$ Packstücke in ununterschiedene Container aufzuteilen, die Bell-Zahl
-$\beta_n$ - bereits $\beta_{40} \approx 1{,}575 \times 10^{35}$, bei den in der App maximal einstellbaren
-100 Packstücken astronomisch größer. Vollständige Enumeration ist von vornherein
+Möglichkeiten, $n$ Packstücke OHNE Kapazitätsgrenze in ununterschiedene Container
+aufzuteilen, die Bell-Zahl $\beta_n$ - bereits $\beta_{40} \approx 1{,}575 \times 10^{35}$, bei
+den per Regler maximal einstellbaren 100 Packstücken $\beta_{100} \approx 4{,}8 \times 10^{115}$.
+Mit Kapazitätsgrenze $Q$ ist das nur eine obere Schranke, aber eine weit entfernte: bei den
+Standardeinstellungen (Packstückgrößen 5-30, $Q=100$, $n=40$) passen bis zu drei Packstücke
+immer in einen Container, allein das ergibt mindestens $1{,}0 \times 10^{32}$ zulässige
+Aufteilungen. Selbst bei der kleinsten Kapazität $Q=30$ und $n=100$ bleiben typischerweise
+noch über $10^{20}$ (allein die rund 40 Packstücke bis Größe 15 passen paarweise immer
+zusammen). Vollständige Enumeration ist von vornherein
 ausgeschlossen; `evaluate_assignment()` in `freight_evaluation.py` berechnet exakt die
 Zielfunktion von oben ($\texttt{total\_cost}$) für die von den Heuristiken gefundenen
 Kandidatenlösungen.

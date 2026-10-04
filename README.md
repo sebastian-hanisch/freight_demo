@@ -473,7 +473,7 @@ Schnitt ~11 % Vorsprung - praktisch identisch zu einem gewöhnlichen Szenario ga
 besondere Zuschneidung (~11 %). Systematisch nach dem tatsächlich wirksamen Hebel
 gesucht (Variation von Hafen-, Regionen- und Packstückzahl): mehr Häfen und mehr
 Packstücke verstärken den Effekt deutlich, mehr Regionen leicht. Neue Konfiguration
-(n=80, r=8, p=5 - beide Regler an ihrem Maximum) liefert bei Seed 1 einen Vorsprung
+(n=80, r=8, p=5 - Regionen- und Häfen-Regler an ihrem Maximum) liefert bei Seed 1 einen Vorsprung
 von 26 % - mehr als doppelt so stark wie zuvor, und über mehrere Seeds robust bei
 ~16-17 % im Schnitt.
 
@@ -582,8 +582,10 @@ nachweislich KEINEN zusätzlichen Nutzen, sobald der Tausch-Zug vorhanden ist (e
 identisches Ergebnis mit und ohne Zusammenlegen-Zug über alle 40 Testfälle) - deshalb
 nicht übernommen, unnötige Komplexität ohne Mehrwert.
 
-**Performance-Problem gefunden und behoben:** der Tausch-Zug skaliert quadratisch mit
-Container- und Packstückzahl pro Container (O(Container² × Items²)). Bei der
+**Performance-Problem gefunden und behoben:** der Tausch-Zug prüft jedes Packstück-Paar aus
+zwei verschiedenen Containern - quadratisch in der Packstückzahl (geschrieben
+O(Container² × Items-pro-Container²), genauer höchstens n²/2 Kandidaten, unabhängig von der
+Containerzahl). Bei der
 App-Obergrenze (100 Packstücke, Beam-Breite 6) explodierte die Rechenzeit auf 9,5-9,8s
 statt der erwarteten <2s - zwei bestehende Performance-Tests schlugen fehl. Fix: der
 Tausch-Zug läuft nur noch in der ERSTEN Suchrunde (wenn der Beam noch schmal ist),
