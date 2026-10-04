@@ -64,8 +64,8 @@ für einen Container ergibt sich erst aus seinem tatsächlichen Inhalt.
 ## Der zentrale Befund: ein echter Kipppunkt, kein Selbstläufer
 
 Die ursprüngliche Erwartung war, dass hafen-bewusste Gruppierung immer (oder fast
-immer) gewinnt. Systematisches Nachrechnen zeigt: **das stimmt nur bei niedriger bis
-mittlerer Seefracht.**
+immer) gewinnt. Systematisches Nachrechnen zeigt: **das stimmt nur bei niedriger Seefracht**
+(Standardwert: 10 von 10 Seeds; schon bei mittlerer, 1,5×, nur noch 6 von 10).
 
 **Mechanismus:** Hafen-bewusste Gruppierung zerteilt den Packstück-Pool vor dem Packen
 (getrennt nach bevorzugtem Hafen) - das führt tendenziell zu **mehr, dafür weniger
@@ -553,7 +553,7 @@ nie negativ herausstellten - vollständig übernommen:
 `port_aware_construction`, `beam_search_construction` und `monobeam_construction`
 gruppieren Packstücke vor dem Packen nach ihrem STRASSENKOSTEN-günstigsten Hafen
 (`np.argmin(road_cost, axis=1)`) - die Seefrachtkosten (die zwischen Häfen um bis zu
-60 % streuen können, siehe `DEFAULT_SEA_FREIGHT_SPREAD`) fließen erst danach ein.
+60 % der Basis auseinanderliegen können - Seefracht = Basis·(1 ± Streuung) mit Standard-Streuung 0,3, siehe `DEFAULT_SEA_FREIGHT_SPREAD`; der Regler erlaubt bis 0,8) fließen erst danach ein.
 Exakt die Art "getrennter statt integrierter Entscheidung", die das Paper als
 Kernschwäche identifiziert. Empirisch verifiziert: eine gesamtkosten-bewusste
 Gruppierung (Straßenkosten PLUS ein Seefracht-Anteil, geschätzt über einen angenommenen

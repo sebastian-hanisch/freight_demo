@@ -348,8 +348,8 @@ sobald der Tausch-Zug und Large Neighborhood Search vorhanden waren, und wurden 
 tendenziell zu mehr, dafür weniger voll ausgelasteten Containern (die Gruppierung zerteilt
 den Packstück-Pool) als blindes Packen. Ob sich das lohnt, hängt vom Verhältnis zwischen
 Seefracht (bestraft mehr Container) und Straßenkosten (belohnt zielgerichtete Gruppierung)
-ab. Bei niedriger bis mittlerer Seefracht gewinnt die hafen-bewusste Gruppierung praktisch
-immer; bei sehr hoher Seefracht kann blindes Packen trotz schlechterer Hafenwahl günstiger
+ab. Bei niedriger Seefracht gewinnt die hafen-bewusste Gruppierung meist (bei mittlerer
+noch in einem Teil der Fälle); bei sehr hoher Seefracht kann blindes Packen trotz schlechterer Hafenwahl günstiger
 sein, weil es mit weniger Containern auskommt. Probieren Sie den Regler "Seefracht je
 Container" aus, um das selbst zu sehen - alle drei Methoden werden bei jeder Einstellung
 neu gerechnet, welche gewinnt wird nicht angenommen.
@@ -490,7 +490,7 @@ hafen-bewusst minus Gesamt-Seefracht blind). Sie entstehen vor allem durch die z
 Container, die die Hafen-bewusste Gruppierung gegenüber blindem Packen tatsächlich benötigt
 (empirisch belegt: nie weniger Container, siehe README) - nicht deren Anzahl mal ein
 Durchschnittswert, sondern die konkret gewählten $c^{sea}_{\delta(c)}$, da einzelne Häfen
-bis zu 60 % streuen können (und sich auch die Hafenwahl der übrigen Container ändern kann).
+beim Standardwert der Streuung bis zu 60 % der Basis auseinanderliegen können (und sich auch die Hafenwahl der übrigen Container ändern kann).
 Per Kostenbuchhaltung gilt exakt:
 Hafen-bewusste Gruppierung ist günstiger genau dann, wenn
 """
@@ -498,7 +498,7 @@ Hafen-bewusste Gruppierung ist günstiger genau dann, wenn
     st.latex(r"\Delta_{road} \;>\; \Delta_{sea}")
     st.markdown(
         r"""
-- bei niedriger Seefracht dominiert $\Delta_{road}$ (Gruppierung gewinnt praktisch immer),
+- bei niedriger Seefracht dominiert $\Delta_{road}$ (Gruppierung gewinnt meist: bei der Standard-Seefracht 10 von 10 Seeds der README-Tabelle, bei 1,5× nur noch 6 von 10),
 bei hoher Seefracht dominiert $\Delta_{sea}$ (blind gepackt gewinnt). Weil sowohl die Anzahl
 zusätzlicher Container als auch deren tatsächliche Hafenwahl vom konkreten Zufallsszenario
 abhängen, gibt es keinen einzelnen festen Seefracht-Wert, der für ALLE Instanzen die Grenze

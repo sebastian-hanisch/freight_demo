@@ -116,8 +116,8 @@ def _total_cost_aware_port_preference(item_sizes, item_regions, capacity, road_c
     port_aware_construction, beam_search_construction und
     monobeam_construction) hat genau diese Schwäche: die Gruppierung
     entscheidet allein nach Straßenkosten, obwohl die Seefrachtkosten
-    zwischen Häfen um bis zu 60 % streuen können (siehe
-    DEFAULT_SEA_FREIGHT_SPREAD) - eine Region könnte den STRASSENKOSTEN-
+    zwischen Häfen beim Standardwert (siehe
+    DEFAULT_SEA_FREIGHT_SPREAD) um bis zu 60 % der Basis streuen können - eine Region könnte den STRASSENKOSTEN-
     günstigsten Hafen bevorzugt bekommen, obwohl ein anderer Hafen in
     GESAMTKOSTEN (inklusive Seefracht) günstiger wäre.
 
