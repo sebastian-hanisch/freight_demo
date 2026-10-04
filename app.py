@@ -483,12 +483,15 @@ Packstücke mit gleichem $k_{\mathrm{pref}}(g_i)$ werden zu einer Gruppe zusamme
 separat per First-Fit-Decreasing gepackt - dieselbe Packroutine wie beim blinden Verfahren,
 nur mit vorheriger Aufteilung nach Hafen-Präferenz.
 
-**Der Kipppunkt (README) formal:** Sei $\Delta_{road} \geq 0$ die durch die Gruppierung
-erzielte Straßenkosten-Ersparnis, und $\Delta_{sea}$ die Summe der Seefracht der zusätzlichen
+**Der Kipppunkt (README) formal:** Sei $\Delta_{road}$ die durch die Gruppierung erzielte
+Straßenkosten-Ersparnis (Straßenkosten blind minus hafen-bewusst; meist positiv, in seltenen
+Fällen aber auch negativ), und $\Delta_{sea}$ die Mehrkosten an Seefracht (Gesamt-Seefracht
+hafen-bewusst minus Gesamt-Seefracht blind). Sie entstehen vor allem durch die zusätzlichen
 Container, die die Hafen-bewusste Gruppierung gegenüber blindem Packen tatsächlich benötigt
 (empirisch belegt: nie weniger Container, siehe README) - nicht deren Anzahl mal ein
-Durchschnittswert, sondern die Summe der konkret gewählten $c^{sea}_{\delta(c)}$ dieser
-Container, da einzelne Häfen bis zu 60 % streuen können. Per Kostenbuchhaltung gilt exakt:
+Durchschnittswert, sondern die konkret gewählten $c^{sea}_{\delta(c)}$, da einzelne Häfen
+bis zu 60 % streuen können (und sich auch die Hafenwahl der übrigen Container ändern kann).
+Per Kostenbuchhaltung gilt exakt:
 Hafen-bewusste Gruppierung ist günstiger genau dann, wenn
 """
     )
@@ -544,7 +547,7 @@ Ein Minimum über eine Menge unabhängig berechneter Kandidaten kann durch einen
 Kandidaten nur gleich bleiben oder besser werden, nie schlechter - exakt die
 Monotonie-Begründung, warum die README-Ablationsstudie zwei frühere zusätzliche
 Startpunkte (gesamtkosten-bewusste Gruppierung, monobeam) gefahrlos wieder entfernen
-konnte, sobald ihr Beitrag empirisch vernachlässigbar war (0 bzw. 2 von 40 betroffenen
+konnte, sobald ihr Beitrag empirisch vernachlässigbar war (2 bzw. 0 von 40 betroffenen
 Testfällen).
 
 **Alternierende Neu-Gruppierung** (`_alternating_regroup`): abwechselnd (a) jedem Packstück
@@ -623,6 +626,6 @@ st.markdown("---")
 
 st.caption(
     "Diese Demo ist Teil des Portfolios von [Sebastian Hanisch](https://sebastianhanisch.net) – "
-    "Operations Research und Machine Learning. Interesse an einer maßgeschneiderten Lösung für "
-    "Ihr Unternehmen? [Kontakt aufnehmen](https://sebastianhanisch.net/kontakt.html)"
+    "Operations Research und Machine Learning ([Über mich](https://sebastianhanisch.net/ueber-mich.html)). "
+    "Mehr zum Thema: [Seefracht optimieren](https://sebastianhanisch.net/seefracht-optimierung.html)."
 )

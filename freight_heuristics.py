@@ -924,7 +924,7 @@ def port_consolidation_frontier(containers, item_regions, item_sizes, road_cost,
 
     Nutzt die BEREITS FESTE Packung (keine Neu-Konstruktion) - nur welcher
     Hafen je Container gewählt wird, variiert. Bei bis zu 5 Häfen (App-
-    Obergrenze) sind das höchstens 2^5=32 Teilmengen, je Teilmenge O(Container
+    Obergrenze) sind das höchstens 2^5-1=31 nicht-leere Teilmengen, je Teilmenge O(Container
     × Teilmengengröße) - empirisch ~3ms bei 100 Packstücken und 5 Häfen,
     vernachlässigbar."""
     n_ports = len(sea_freight)

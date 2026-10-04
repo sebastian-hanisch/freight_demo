@@ -28,7 +28,6 @@ für einen Container ergibt sich erst aus seinem tatsächlichen Inhalt.
 | `freight_evaluation.py` | Kostenaggregation (See + Straße) |
 | `freight_visualization.py` | 2D-Karte (Plotly) |
 | `freight_pdf_export.py` | PDF-Konsolidierungsplan-Erzeugung |
-| `freight_feedback.py` | Feedback-Logging |
 | `freight_ui_panel.py` | Wiederverwendbares UI-Panel je Heuristik |
 | `freight_presets.py` | Beispielszenarien, Permalink-Logik (`SETTING_SPECS`) |
 
@@ -42,18 +41,20 @@ für einen Container ergibt sich erst aus seinem tatsächlichen Inhalt.
     Rücksicht auf Zielregion.
   - *Hafen-bewusst gruppiert*: Packstücke werden zuerst nach ihrem günstigsten Hafen
     (anhand der Straßenkosten ihrer Zielregion) gruppiert, erst danach gepackt.
-  - *Beam Search*: startet bei der hafen-bewusst gruppierten Lösung (garantiert nie
-    schlechter) und sucht gezielt nach lohnenden Hafen-Wechseln einzelner Packstücke -
+  - *Beam Search*: startet bei Blind gepackt und einer alternierend neu gruppierten
+    Variante (garantiert nie schlechter als Blind) und sucht gezielt nach lohnenden
+    Hafen-Wechseln einzelner Packstücke -
     die starre Gruppierung ist nicht immer optimal (siehe eigener Abschnitt unten,
-    auf ausdrücklichen Wunsch ergänzt, inkl. handgerechnetem Beweis). Nachweislich
-    **monoton** in der Beam-Breite (Regler "Beam-Breite", 1-6).
+    auf ausdrücklichen Wunsch ergänzt, inkl. handgerechnetem Beweis). Der Ensemble-Kern
+    ist **monoton** im Parameter `beam_width`; der UI-Regler "Beam-Breite" wurde später
+    entfernt (siehe "Zehnter Fund").
 - **Primäransicht "Ihre kostenoptimierte Konsolidierung"** von Anfang an (Lehre aus
   der Tourenplanung-Demo direkt übernommen): zeigt die tatsächlich günstigere Methode,
   **dynamisch bei jedem Lauf neu bestimmt** (siehe Kipppunkt unten) - kein
   Algorithmus-Name in der Überschrift, Methode als Caption genannt.
 - **Kostenverhältnis als explorierbarer Regler:** "Seefracht je Container (€)" macht
   den zentralen Trade-off dieser Demo direkt erfahrbar (siehe unten).
-- **Karte, PDF-Export, Permalink, Feedback-Mechanismus:** wie bei den anderen Demos.
+- **Karte, PDF-Export, Permalink:** wie bei den anderen Demos.
 - Von Anfang an mit dem `SETTING_SPECS`-Muster und NaN/Bounds-Schutz im Permalink
   gebaut (keine nachträglich gefundenen Absturz-Bugs wie bei der Tourenplanung-Demo).
 - **Mathematische Formulierung als eigener Expander:** formales binäres Programm,
@@ -72,9 +73,9 @@ voll ausgelasteten Containern** als blindes Packen. Verifiziert über 5 Testinst
 Blind nutzt 5-6 Container, hafen-bewusst 7 (`test_port_aware_uses_at_least_as_many_containers`).
 
 **Bei Standard-Seefracht (800 €/Container):** hafen-bewusste Gruppierung gewinnt in
-8 von 8 Testinstanzen, im Schnitt ca. 700 € Ersparnis (`test_port_aware_wins_at_default_sea_freight`).
+8 von 8 Testinstanzen, im Schnitt ca. 750 € Ersparnis (`test_port_aware_wins_at_default_sea_freight`).
 
-**Systematische Suche nach dem Kipppunkt** (40 Packstücke, 6 Regionen, 3 Häfen, 10
+**Systematische Suche nach dem Kipppunkt** (30 Packstücke, 5 Regionen, 3 Häfen, 10
 Seeds je Stufe):
 
 | Seefracht-Multiplikator | Hafen-bewusst gewinnt |
@@ -86,7 +87,7 @@ Seeds je Stufe):
 | 3,0× | 1 / 10 |
 
 Der Übergang ist graduell, nicht abrupt - ab ca. dem 2- bis 3-fachen der Standard-
-Seefracht kehrt sich der Vorteil im Mehrheit der Fälle um: die zusätzlichen Container
+Seefracht kehrt sich der Vorteil in der Mehrheit der Fälle um: die zusätzlichen Container
 der hafen-bewussten Gruppierung kosten mehr, als die bessere Hafenwahl einspart.
 Deshalb bestimmt die App **bei jedem Lauf neu**, welche Methode tatsächlich günstiger
 ist (`best = min(candidates, key=lambda c: c["total_cost"])`) - keine Methode wird
@@ -781,7 +782,7 @@ bei einem Anbieter, ggf. Mengenrabatte).
 Empirisch oft ein echter, interessanter Kompromiss: bei einer Testinstanz kostete die
 Beschränkung auf nur 1 Hafen 45 % mehr als die freie Wahl, mit 2 Häfen nur noch 19 %
 mehr, ab 3 Häfen kein Unterschied mehr zur vollen Flexibilität. Sehr günstig zu
-berechnen (bei bis zu 5 Häfen, der App-Obergrenze, höchstens 2⁵=32 Teilmengen zu prüfen -
+berechnen (bei bis zu 5 Häfen, der App-Obergrenze, höchstens 2⁵−1=31 nicht-leere Teilmengen zu prüfen -
 ~3ms bei 100 Packstücken).
 
 ### 2. Ausgeglichenere Container
@@ -947,7 +948,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-86 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
+95 Tests, laufen automatisch bei jedem Push/PR über GitHub Actions.
 
 ## 3. Kostenlos online stellen (Streamlit Community Cloud)
 
@@ -972,4 +973,4 @@ pytest tests/ -v
 - Test an einem echten Mobilgerät
 ---
 
-Teil des [Operations-Research-Demo-Portfolios](https://sebastianhanisch.net/demos.html) von [Sebastian Hanisch](https://sebastianhanisch.net) — Operations Research und Machine Learning. Interesse an einer maßgeschneiderten Lösung? [Kontakt aufnehmen](https://sebastianhanisch.net/kontakt.html).
+Diese Demo ist Teil des Portfolios von [Sebastian Hanisch](https://sebastianhanisch.net) – Operations Research und Machine Learning ([Über mich](https://sebastianhanisch.net/ueber-mich.html)). Mehr zum Thema: [Seefracht optimieren](https://sebastianhanisch.net/seefracht-optimierung.html).
